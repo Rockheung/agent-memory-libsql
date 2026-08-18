@@ -36,20 +36,62 @@ DB 가 아니라 Gateway 다.**
         └────────────┘  └──────────┘  └─────────┘
 ```
 
-각 머신의 OpenClaw 플러그인 설정:
+### ⚠️ 클라이언트 접속 경로 — 정정 (2026-08-19)
 
-```json
-{
-  "mode": "remote",
-  "server": {
-    "url": "https://memory.h.rockheung.xyz",
-    "apiKey": "...",
-    "instanceId": "default",
-    "teamId": "rock", "agentId": "rock-agent", "userId": "rock"
-  },
-  "recall": { "maxResults": 5, "includePersona": true }
-}
+이 문서 초판은 클라이언트 설정으로 OpenClaw 플러그인의 `mode: "remote"` 를 제시했다.
+**그건 OpenClaw 전용이다.** OpenClaw 는 Claude Code 가 아니라 별개의 에이전트 호스트
+제품이고, Claude Code 에는 그 플러그인을 꽂을 자리가 없다.
+
+`INSTALL.md` 목차가 실상을 보여준다 — 클라이언트 8종이 전부 프록시 경로다:
+
 ```
+Using Proxy with Claude Code / CodeBuddy / WorkBuddy / Codex /
+                 DeepSeek Harness / Hermes / OpenClaw / Other (Generic)
+```
+
+**OpenClaw 조차 프록시 경로가 문서화돼 있다.** 즉 보편 경로는 MemoryProxy 하나이고,
+OpenClaw 플러그인은 OpenClaw 에만 있는 *추가* 옵션이다.
+
+| 클라이언트 | 경로 |
+|---|---|
+| Claude Code / Codex / 대부분 | **MemoryProxy :8096** (`ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` 전환) |
+| OpenClaw | 프록시, 또는 플러그인 `mode: local\|remote` |
+| 커스텀 에이전트 | 프록시 Generic 경로 + 헤더 4종 |
+| **MCP** | **없음** — MCP 서버는 `MemoryKnowledge` 에만 있고 툴이 `code_*` / `wiki_*` 12종이다. **L0~L3 채팅 기억용 MCP 는 존재하지 않는다.** |
+
+#### Claude Code (`INSTALL.md:262`)
+
+```bash
+export ANTHROPIC_BASE_URL=http://<proxy-host>:8096/claude-code/default
+export ANTHROPIC_AUTH_TOKEN="$(cat deploy/global-images/.admin-key)"
+```
+
+프록시 파이프라인: `auth`(user_key 검증) → `sessionInit`(팀/에이전트/태스크 선택)
+→ `injection`(L2/L3 + skill + knowledge 를 시스템 프롬프트에 주입) → 상위 LLM 포워드.
+
+#### Generic — 대화형 폼 건너뛰기 (`INSTALL.md:610`)
+
+```text
+http://<proxy-host>:8096/<agent-source>/<spaceId>
+  agent-source ∈ { claude-code, codebuddy, workbuddy, codex, hermes, openclaw }
+```
+헤더 `Authorization: Bearer <user_key>`, `x-team-id`, `x-agent-id`, `x-task-id`,
+`x-conversation-id` **4종 전부 필수**. 하나라도 없으면 session bypass 로 떨어져
+**기억 주입도 대화 기록도 안 된다.** 자동화에는 이쪽이 맞다.
+
+#### ⚠️ 그 대가 — LLM 경로가 바뀐다
+
+```
+지금:      Claude Code ─────────────► Anthropic (구독 인증)
+프록시 후:  Claude Code ─► :8096 ─► PROXY_UPSTREAM  (예: cliproxy)
+                             └─────► memory-core :8420
+```
+
+`ANTHROPIC_BASE_URL` 을 돌리면 **모든 요청이 프록시의 upstream 으로 간다.**
+어느 계정·어느 한도로 쓰는지가 바뀐다. 그리고 MCP 우회로가 없으므로
+**"LLM 경로를 그대로 두고 기억만 붙이는" 선택지는 이 제품에 없다.**
+
+---
 
 근거:
 - `MemoryCore/index.ts:64` — `client|gateway|remote` → 씬 클라이언트로 위임

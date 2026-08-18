@@ -30,7 +30,7 @@
    (`sqlite.ts:1513`)가 걸린다. 제대로 하려면 2,000~3,000 LOC 짜리 새 스토어 구현이다.
 
 3. **그런데 원하는 중앙화는 Turso 없이 이미 된다.**
-   OpenClaw 플러그인에 `mode: "remote"` 가 있고 (`MemoryCore/index.ts:64`),
-   순수 HTTP 씬 클라이언트가 이미 구현돼 있다. 중앙에 놓을 것은 DB 가 아니라
-   **memory-core Gateway** 다. L2/L3 는 DB 가 아니라 마크다운 파일이라
+   중앙에 놓을 것은 DB 가 아니라 **memory-core Gateway** 다. 클라이언트는
+   **MemoryProxy(:8096)** 로 붙는다 — Claude Code 포함 8종이 전부 이 경로다.
+   (OpenClaw 플러그인의 `mode: "remote"` 는 OpenClaw 전용 *추가* 옵션이다.) L2/L3 는 DB 가 아니라 마크다운 파일이라
    DB 만 중앙화해서는 어차피 안 풀린다.
