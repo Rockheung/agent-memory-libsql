@@ -15,6 +15,7 @@
 | [04-MARKDOWN-PLACEMENT.md](04-MARKDOWN-PLACEMENT.md) | L2/L3 마크다운을 어디에 둘 것인가 — 3개 안 비교 + `agentId` 함정 |
 | [05-UPSTREAM-OR-FORK.md](05-UPSTREAM-OR-FORK.md) | 업스트림 PR vs 포크 — 거버넌스 실측 데이터 기반 판정 |
 | [ROADMAP.md](ROADMAP.md) | **작업 계획** — M0(코드 0) ~ M5 + 업스트림 트랙 |
+| [06-M0-RESULT.md](06-M0-RESULT.md) | **M0 실측 결과** — Gateway 중앙화 검증 통과, 발견 9건 |
 
 ---
 
