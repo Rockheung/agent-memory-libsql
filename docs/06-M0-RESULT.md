@@ -3,7 +3,7 @@
 실행일 2026-08-19 / 환경: macOS, colima 4CPU 8GB aarch64, docker 29.2.1
 이미지 `agentmemory/memory-core:latest` (**linux/arm64**, 1.36GB)
 
-**판정: C0–C5 통과. 코드 수정 0줄로 멀티클라이언트 기억 공유가 동작한다.**
+**판정: C0–C7 전부 통과. 코드 수정 0줄로 멀티클라이언트 기억 공유가 동작한다.**
 → `02-TURSO-FEASIBILITY.md` §4 의 "Turso 없이 된다"가 실측으로 확인됐다.
 
 ---
@@ -32,8 +32,8 @@ memory-core :8420  (colima 컨테이너, volume tdai-memory-core-data)
 | C3 | 클라이언트 접속 (HTTP 직접) | ✅ |
 | C4 | **다른 세션이 앞선 세션의 기억을 보는가** | ✅ 4/4 hit |
 | C5 | 벡터 검색 | ✅ `strategy=hybrid`, vec0 후보 반환 |
-| C6 | L2/L3 파일 생성 | ⏳ 대화량 부족 (아래 F5) |
-| C7 | 머신 간 L2/L3 병합 | ⏳ C6 선행 |
+| C6 | L2/L3 파일 생성 | ✅ |
+| C7 | **세션 간 L2/L3 병합** | ✅ 3개 세션 → 프로필 1개 |
 
 ### C2/C4 실측
 
@@ -111,11 +111,43 @@ L0 저장/조회/검색은 LLM 무관. LLM 은 L1/L2/L3 에만 필요하다.
 → **운영 원칙: 데이터 넣기 전에 임베딩을 먼저 켠다.** `dimensions` 를 바꾸면
 벡터 테이블을 드롭하고 전량 재임베딩한다(`sqlite.ts` needsReindex 경로) — 차원 변경은 비싸다.
 
-### F5 — L2/L3 는 대화량 임계치가 있다
+### F5 — L2/L3 는 루트가 아니라 **프로필 스코프 디렉터리**에 쌓인다 ★
 
-기본값 `pipeline.everyNConversations: 5`, `l2DelayAfterL1Seconds: 90`,
-`l2MinIntervalSeconds: 900`, `persona.triggerEveryN: 50`.
-6개 메시지로는 L2 시나리오 블록도, L3 페르소나도 안 만들어진다. C6/C7 은 실사용 축적이 필요하다.
+처음에 `/data/tdai-memory/scene_blocks/` 와 `persona.md` 를 보고 "안 만들어졌다"고 판단했는데
+**틀렸다.** 실제 산출물은 스코프 하위에 있다:
+
+```
+/data/tdai-memory/profiles/team%3Ateam-9muccx5zxu%7Cagent%3Aagt-9mudpy0pqv/
+  ├─ scene_blocks/홈랩-중앙화-메모리코어-Gateway.md     ← L2
+  ├─ .metadata/scene_index.json
+  └─ persona.md                                        ← L3
+```
+
+**디렉터리 이름이 곧 프로필 스코프다** — `team:<teamId>|agent:<agentId>` 를 URL 인코딩한 것.
+**session 이 들어있지 않다.** 파이프라인 로그도 같은 말을 한다:
+
+```
+[L2] session=profile:team:T|agent:A|session:m0-gpu-003, profile=team:T|agent:A
+                └─ 스케줄러 태스크 키 (세션 포함)      └─ 프로필 정체성 (세션 없음)
+```
+
+→ `04-MARKDOWN-PLACEMENT.md` §4 의 **"L2/L3 정체성은 (teamId, agentId)"** 주장이
+파일시스템 레벨에서 확인됐다. `buildProfileL2Key`(`pipeline-factory.ts:100-103`)가
+세션을 붙이는 건 태스크 키뿐이다.
+
+### C7 실측 — 세션 3개가 프로필 1개로 병합
+
+`m0-mac-001` / `m0-pi-002` / `m0-gpu-003` 세 세션이 **하나의 scene block** 으로 합쳐졌다:
+
+```
+summary: 홈랩 중앙화를 memory-core Gateway 한 대로 통합하고, 마크다운 기반 페르소나
+         구조를 유지하면서 bge-m3 임베딩을 활성화해 한국어 검색 성능 개선을 검증하려 한다.
+heat: 2
+```
+
+앞 문장은 mac 세션, 뒷 문장은 gpu 세션에서 왔다. L3 persona.md 도 생성됐다.
+
+→ **머신을 늘려도 `agentId` 만 같으면 인격이 하나로 축적된다.** 이것이 M0 의 핵심 확인 사항이었다.
 
 ### F6 — 한국어에서 벡터 검색은 선택이 아니라 필수다 ★
 
@@ -133,7 +165,7 @@ FTS5 토크나이저 로그:
 → **한국어로 쓸 거면 `embedding.provider` 를 반드시 켜야 한다.** BM25 단독은 못 쓴다.
 → `bge-m3` 는 다국어 임베딩이라 이 문제에 정확히 맞는 선택이다.
 
-### F7 — reasoning effort 를 넘길 방법이 없다 ★
+### F7 — reasoning effort: MemoryCore 는 못 보내지만 **CLIProxyAPI 서버에서 지정 가능** ★
 
 `StandaloneLLMOverrideConfig`(`config.ts:202-229`) 필드는
 `enabled / baseUrl / apiKey / model / maxTokens / timeoutMs / provider / proxy` 가 전부다.
@@ -144,9 +176,35 @@ CLIProxyAPI 자체는 `reasoning_effort` / `reasoning.effort` 를 넣어도 200 
 모델 목록에도 `gpt-5.6-luna` 의 effort 변형은 없다
 (`gemini-3.1-pro-low` / `gemini-3.6-flash-high` 처럼 접미사로 노출되는 모델군과 대조적).
 
+**oci-ko 서버 실측 (2026-08-19): 서버 측 지정이 가능하다.**
+
+`config.example.yaml:471-483` 에 정확히 이 용례가 문서화돼 있고,
+`config.yaml` 에 **이미 사용 중**이다:
+
+```yaml
+payload:
+  override:                       # override = 값이 있어도 항상 덮어씀
+    - models:
+        - name: "gpt-5.6-sol"
+          protocol: "codex"
+      params:
+        "reasoning.effort": "low"
+```
+
+- **유효 레벨 = `low, medium, high, xhigh, max`** (업스트림 400 에러가 목록을 뱉음).
+  즉 **최댓값은 `high` 가 아니라 `max`** 다.
+- `auth-dir` 에 `codex-<account>` 가 있으므로 `gpt-*` 계열은 `protocol: "codex"` 가 맞다.
+- **설정 핫리로드된다.** journalctl 에 PID 변경 없이
+  `server clients and configuration updated` 가 찍힌다 → 재시작 불필요.
+- 클라이언트가 보낸 `reasoning_effort` 는 업스트림까지 **전달된다**
+  (잘못된 값이 업스트림 400 을 받음). 못 보내는 건 순전히 MemoryCore 쪽 한계다.
+
+⚠️ **`override` 는 해당 모델의 모든 소비자에게 적용된다** (LibreChat 등 포함).
+스코프를 좁히려면 `default:`(값이 없을 때만 적용) 또는 규칙의 `headers:` / `match:` 조건을 쓴다.
+
 선택지:
-1. CLIProxyAPI 쪽 config 에서 모델별 기본 effort 지정 (포크 수정 0)
-2. 포크에 `reasoningEffort` 필드 + `providerOptions: { openai: { reasoningEffort } }` 추가 (~10줄)
+1. **CLIProxyAPI `payload.override` 에 luna → `max` 추가 (포크 수정 0)** ← 확인됨
+2. 포크에 `reasoningEffort` 필드 + `providerOptions: { openai: { reasoningEffort } }` (~10줄)
 3. effort 접미사가 붙은 다른 모델 사용
 
 > 2번은 **upstream PR 후보로 유망하다.** 병합 실적이 있는 카테고리와 정확히 같다 —
