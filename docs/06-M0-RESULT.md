@@ -202,9 +202,68 @@ payload:
 ⚠️ **`override` 는 해당 모델의 모든 소비자에게 적용된다** (LibreChat 등 포함).
 스코프를 좁히려면 `default:`(값이 없을 때만 적용) 또는 규칙의 `headers:` / `match:` 조건을 쓴다.
 
-선택지:
-1. **CLIProxyAPI `payload.override` 에 luna → `max` 추가 (포크 수정 0)** ← 확인됨
+### F7-해결 — `oauth-model-alias` + `payload.override` 조합으로 해결 ✅
+
+**effort 조합을 별도 모델로 노출할 수 있다.** `oauth-model-alias` 문서:
+
+> *"You can repeat the same name with different aliases to expose multiple client model names."*
+> `fork: true` — 원본 업스트림 모델을 유지한 채 별칭을 **별도 모델로 추가** 노출
+
+적용한 설정 (oci-ko `/home/ubuntu/cliproxy/config.yaml`, 2026-08-19):
+
+```yaml
+oauth-model-alias:
+  codex:
+    - { name: "gpt-5.6-sol",  alias: "gpt-5.6-sol-light", fork: true }
+    - { name: "gpt-5.6-luna", alias: "gpt-5.6-luna-max",  fork: true }
+
+payload:
+  override:
+    - { models: [{name: "gpt-5.6-sol", protocol: "codex"}],       params: {"reasoning.effort": "low"} }   # 기존(Leo/BYOM용) 유지
+    - { models: [{name: "gpt-5.6-sol-light", protocol: "codex"}], params: {"reasoning.effort": "low"} }   # 신규
+    - { models: [{name: "gpt-5.6-luna-max", protocol: "codex"}],  params: {"reasoning.effort": "max"} }   # 신규
+```
+
+**핵심 미지수였던 "규칙이 별칭을 보는가 업스트림 이름을 보는가" → 별칭을 본다.** 실측:
+
+| 모델 | 규칙 | reasoning_tokens |
+|---|---|---|
+| `gpt-5.6-luna` | 없음 (프로바이더 기본) | **1,519** |
+| `gpt-5.6-luna-max` | `reasoning.effort: max` | **3,624** (2.4배) |
+
+동일 프롬프트(정육면체 세제곱합 조합 문제), `max_tokens=2000`.
+`gpt-5.6-sol-light` 는 단순 질문에 `reasoning_tokens=0` — low 가 걸린 것과 일관.
+
+부수 확인:
+- **설정 핫리로드.** journalctl 에 PID 변경 없이 `configuration updated` → 재시작 불필요
+- 모델 목록 47 → 49개. 원본 `gpt-5.6-sol` / `gpt-5.6-luna` **동작 변화 없음** (fork)
+- 응답의 `model` 필드는 업스트림 이름(`gpt-5.6-luna`)으로 온다.
+  별칭으로 돌려받으려면 별칭 항목에 `force-mapping: true` 를 추가한다 (현재 미적용)
+- 백업: `config.yaml.bak.20260818-194357`
+
+**→ 포크 수정 0줄로 해결됐다.** `MEMORY_LLM_MODEL=gpt-5.6-luna-max` 로 바꾸는 것이 전부이고,
+LibreChat 등 다른 소비자는 원본 모델을 그대로 쓴다. 스코프 문제도 같이 사라졌다.
+
+### F10 — max effort 는 L1 추출 지연을 3배 이상 늘린다
+
+동일한 2메시지 L1 추출:
+
+```
+기본 effort   run() completed:  ~7,000ms
+max  effort   run() completed:  23,660ms   (extracted=1, stored=1)
+```
+
+L1/L2 는 백그라운드 파이프라인이라 사용자 체감 지연은 아니지만,
+`l1IdleTimeoutSeconds: 600` 같은 타이머와 토큰 비용에는 직접 영향이 있다.
+회상(recall) 경로는 LLM 을 안 타므로 영향 없음.
+
+---
+
+### 남은 선택지 (참고)
+
+1. ~~CLIProxyAPI `payload.override`~~ ← **채택·적용 완료**
 2. 포크에 `reasoningEffort` 필드 + `providerOptions: { openai: { reasoningEffort } }` (~10줄)
+   → 더 이상 필요 없지만, upstream PR 후보로는 여전히 유효 (#228 선례)
 3. effort 접미사가 붙은 다른 모델 사용
 
 > 2번은 **upstream PR 후보로 유망하다.** 병합 실적이 있는 카테고리와 정확히 같다 —
