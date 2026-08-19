@@ -1,2 +1,1 @@
-{ "name": "turso-spike", "private": true, "type": "module",
-  "dependencies": { "@libsql/client": "^0.15.0" } }
+{"name":"turso-spike","private":true,"type":"module","dependencies":{"@aws-sdk/client-s3":"^3.1113.0","@libsql/client":"^0.15.0"}}
