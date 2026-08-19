@@ -100,7 +100,6 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.53",
-    "@libsql/client": "^0.17.4",
     "@node-rs/jieba": "^2.0.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/api-logs": "^0.218.0",
@@ -128,7 +127,9 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
+    "@aws-sdk/client-s3": "^3.1113.0",
     "@clickhouse/client": "^1.18.5",
+    "@libsql/client": "^0.17.4",
     "@opentelemetry/context-async-hooks": "^2.7.1",
     "@opentelemetry/exporter-logs-otlp-grpc": "^0.218.0",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.218.0",

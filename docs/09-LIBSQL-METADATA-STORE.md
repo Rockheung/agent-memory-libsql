@@ -95,7 +95,12 @@ PK 충돌 감지              정상 — isPkCollision 정규식이 원격에서
 
 ## upstream 수정 범위
 
-**0곳.** 전부 신규 파일이다.
+**1줄.** `package.json` 의 `optionalDependencies` 에 `@libsql/client` 추가.
+`mongodb` / `cos-nodejs-sdk-v5` 가 이미 같은 자리에 있어 정책이 일관된다 —
+동적 import 되는 백엔드는 선택 의존성이라는 upstream 관례를 그대로 따랐다.
+(같은 커밋에서 `@aws-sdk/client-s3` 도 함께 등록했다.)
+
+나머지는 전부 신규 파일이다.
 
 ```
 metadata/store/libsql-adapter.ts        신규 (sqlite-adapter 에서 파생)
@@ -110,4 +115,4 @@ metadata/store/sqlite-adapter.test.ts   신규 (하네스 복원)
 
 - [ ] `MetadataBackend` 에 `"libsql"` + `metadata/store/factory.ts` 에 case
 - [ ] 원격 전용 동작 확인: 동시 접근, 무료 플랜 연결 수 제한
-- [ ] `@libsql/client` 를 optional dependency 로 선언
+- [x] `@libsql/client` 를 optional dependency 로 선언
