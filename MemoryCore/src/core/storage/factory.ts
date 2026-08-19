@@ -27,8 +27,15 @@ export async function createStorageBackend(
 ): Promise<IStorageBackend> {
   switch (config.type) {
     case "cos": {
+      // S3 호환 스토리지: 동적 import 로 @aws-sdk 를 선택 의존성으로 유지한다
+      // (COS 백엔드가 그러하듯, 안 쓰는 배포에서 번들·설치 부담을 지우지 않는다).
+      if (config.s3) {
+        const { S3StorageBackend } = await import("./s3-backend.js");
+        logger?.info(`${TAG} Creating S3-compatible storage backend: ${config.s3.endpoint}/${config.s3.bucket}`);
+        return new S3StorageBackend({ ...config.s3, logger });
+      }
       if (!config.credentialProvider) {
-        throw new Error(`${TAG} COS backend requires a credentialProvider`);
+        throw new Error(`${TAG} COS backend requires either 's3' config or a credentialProvider`);
       }
 
       let CosStorageBackendCtor: typeof import("../../integrations/cos/cos-backend.js").CosStorageBackend;

@@ -216,6 +216,22 @@ export interface StorageBackendConfig {
 
   /** COS backend: credential provider instance. */
   credentialProvider?: ICredentialProvider;
+
+  /**
+   * S3 호환 백엔드 설정 (Oracle Object Storage / R2 / MinIO / AWS).
+   * 지정되면 `type: "cos"` 로 신고되는 S3StorageBackend 가 생성된다.
+   * `credentialProvider` 와 동시에 주면 s3 가 우선한다.
+   */
+  s3?: {
+    endpoint: string;
+    region: string;
+    bucket: string;
+    accessKeyId: string;
+    secretAccessKey: string;
+    /** 모든 키 앞에 붙는 접두사 (COS 자격증명의 prefix 와 같은 역할). */
+    keyPrefix?: string;
+    forcePathStyle?: boolean;
+  };
 }
 
 /** Minimal logger interface for storage operations. */
