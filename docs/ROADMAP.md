@@ -79,7 +79,26 @@ cp .env.example .env && $EDITOR .env      # MEMORY_LLM_* 만 채우면 M0 는 �
 
 ---
 
-## M1 — 실사용 연결 · **코드 0줄** ← 다음
+## M1 — 실사용 연결 ✅ 완료 (2026-08-19) — **프록시 대신 훅 어댑터**
+
+> 결론이 바뀌었다. 아래 프록시 경로 대신 **`ClaudeCodeAdapter/`** 를 만들어 해결했다.
+> 프록시는 `ANTHROPIC_BASE_URL` 을 가로채 LLM 을 upstream 으로 넘기는데,
+> 훅 어댑터는 **LLM 경로를 건드리지 않아 기존 구독이 유지된다.**
+>
+> ```
+> UserPromptSubmit → /v3/core/read · /v3/atomic/search · /v3/scenario/ls → additionalContext
+> Stop             → /v3/conversation/add
+> ```
+>
+> 실전 검증: 훅 발동 ✅ / 주입(L3·L2 세션당 1회 + L1 매 턴) ✅ / L0 기록 ✅ /
+> **추출→재회상 왕복 ✅** / fail-open 0.09s ✅ / `claude -p` 헤드리스에서도 발동 ✅
+>
+> 남은 정리 항목:
+> - [ ] `-p` 세션마다 새 session_id → L3 페르소나 매번 재주입. `MEMORY_ADAPTER_LEAN=1` 로 회피 가능하나 기본값 검토 필요
+> - [ ] `~/.claude/memory-adapter/*.json` state 파일 TTL 청소 (7일)
+> - [ ] 9409 등 테스트 데이터 정리 여부 결정
+
+<details><summary>원래 계획(MemoryProxy 경유) — 참고용</summary>
 
 > M0 는 HTTP 로만 검증했다. **실제 코딩 에이전트가 붙는 경로는 아직 미검증이다.**
 > 그리고 Claude Code 는 OpenClaw 플러그인이 아니라 **MemoryProxy 경유**다
@@ -107,6 +126,8 @@ export ANTHROPIC_AUTH_TOKEN=$(cat deploy/global-images/.admin-key)
 - [ ] 대화 후 `/v3/atomic/query` 에 L1 이 쌓이는지 확인
 - [ ] L2/L3 가 `profiles/team:...|agent:.../` 에 누적되는지 확인
 - [ ] 두 번째 머신에서 같은 team/agent 로 붙여 기억 공유 확인 (**진짜 C7**)
+
+</details>
 
 ---
 
@@ -226,8 +247,9 @@ export ANTHROPIC_AUTH_TOKEN=$(cat deploy/global-images/.admin-key)
 | 포크 | `Rockheung/agent-memory-libsql` ← `TencentCloud/TencentDB-Agent-Memory` |
 | 브랜치 | `rock/main` (작업), `feat/server_team` (upstream 미러) |
 | 완료 | 코드레벨 분석 6편 + **M0 검증 통과(C0–C7)** + effort 별칭 구성 |
-| 현재 구성 | memory-core :8420 (Mac colima) / LLM `gpt-5.6-luna-max` / 임베딩 `bge-m3` |
-| **다음** | **M1** — MemoryProxy 세우고 Claude Code 실연결 |
+| 현재 구성 | memory-core :8420 (Mac colima) / LLM `gpt-5.6-sol-low` / 임베딩 `bge-m3` |
+| 클라이언트 | `ClaudeCodeAdapter` 훅 — 실전 동작 확인 (프록시 없이, 구독 유지) |
+| **다음** | **M2** — oci-ko 이관 (M1 은 훅 어댑터로 대체 달성) |
 
 ### M0 이후 재조정 요약
 
@@ -237,4 +259,5 @@ export ANTHROPIC_AUTH_TOKEN=$(cat deploy/global-images/.admin-key)
 | libSQL 백엔드 | 우선순위 상 | **하 — 백업 자동화 목적만 남음** |
 | 벡터 검색 | 선택 | **한국어에선 필수** (F6) |
 | reasoning effort | 경로 없음 | **해결 — cliproxy 별칭** (F7) |
-| 실사용 연결 | 미검토 | **최우선 (M1)** — Claude Code 는 프록시 경유 |
+| 실사용 연결 | 미검토 | ✅ **훅 어댑터로 해결** — 프록시 불필요, 구독 유지 |
+| L1 추출 모델 | 미정 | `gpt-5.6-sol-low` (A/B 결과, F11) |

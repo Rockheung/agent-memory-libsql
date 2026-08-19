@@ -214,13 +214,13 @@ payload:
 ```yaml
 oauth-model-alias:
   codex:
-    - { name: "gpt-5.6-sol",  alias: "gpt-5.6-sol-light", fork: true }
+    - { name: "gpt-5.6-sol",  alias: "gpt-5.6-sol-low", fork: true }
     - { name: "gpt-5.6-luna", alias: "gpt-5.6-luna-max",  fork: true }
 
 payload:
   override:
     - { models: [{name: "gpt-5.6-sol", protocol: "codex"}],       params: {"reasoning.effort": "low"} }   # 기존(Leo/BYOM용) 유지
-    - { models: [{name: "gpt-5.6-sol-light", protocol: "codex"}], params: {"reasoning.effort": "low"} }   # 신규
+    - { models: [{name: "gpt-5.6-sol-low", protocol: "codex"}], params: {"reasoning.effort": "low"} }   # 신규
     - { models: [{name: "gpt-5.6-luna-max", protocol: "codex"}],  params: {"reasoning.effort": "max"} }   # 신규
 ```
 
@@ -232,7 +232,7 @@ payload:
 | `gpt-5.6-luna-max` | `reasoning.effort: max` | **3,624** (2.4배) |
 
 동일 프롬프트(정육면체 세제곱합 조합 문제), `max_tokens=2000`.
-`gpt-5.6-sol-light` 는 단순 질문에 `reasoning_tokens=0` — low 가 걸린 것과 일관.
+`gpt-5.6-sol-low` 는 단순 질문에 `reasoning_tokens=0` — low 가 걸린 것과 일관.
 
 부수 확인:
 - **설정 핫리로드.** journalctl 에 PID 변경 없이 `configuration updated` → 재시작 불필요
@@ -241,8 +241,59 @@ payload:
   별칭으로 돌려받으려면 별칭 항목에 `force-mapping: true` 를 추가한다 (현재 미적용)
 - 백업: `config.yaml.bak.20260818-194357`
 
+**별칭 이름 규칙**: 접미사는 **effort 유효값과 일치**시킨다 (`low` / `medium` / `high` /
+`xhigh` / `max`). 초기에 `sol-light` 로 붙였다가 `sol-low` 로 정정했다 — 조합을 계속
+늘릴 것이므로 이름만 봐도 effort 가 읽혀야 한다.
+
+⚠️ **`sed -i` 로 config 를 고치면 핫리로드가 안 걸린다.** rename 이 inode 를 바꿔
+파일 워처가 감시를 잃는다. `systemctl restart cliproxy.service` 가 필요하다
+(1초, LibreChat 잠깐 끊김). 파이썬 in-place 재작성은 inode 를 유지하지만,
+워처가 이미 끊긴 뒤에는 소용없다.
+
 **→ 포크 수정 0줄로 해결됐다.** `MEMORY_LLM_MODEL=gpt-5.6-luna-max` 로 바꾸는 것이 전부이고,
 LibreChat 등 다른 소비자는 원본 모델을 그대로 쓴다. 스코프 문제도 같이 사라졌다.
+
+### F11 — L1 추출 모델 A/B: **`sol-low` 채택**
+
+동일 대화(사실 4개 포함)를 각 모델에 먹여 L1 추출을 비교했다.
+
+| 모델 | 지연 | 추출 | 원자화 |
+|---|---|---|---|
+| **`gpt-5.6-sol-low`** | **7.5초** | 1건 | 4개 사실을 한 덩어리로 |
+| `gpt-5.6-luna-max` | 23.6초 | 1건 | 한 덩어리 |
+| `claude-sonnet-4-6` | 608초 ⚠️ | 2건 | 스냅샷 일정을 별도 기억으로 분리 |
+
+**채택: `gpt-5.6-sol-low`.** L1 추출은 매 턴 도는 작업이고, 추출 내용이 실질적으로
+동일한데 luna-max 대비 3배 빠르다. max effort 가 값을 하는 건 어려운 추론인데
+**L1 추출은 추론이 아니라 발췌**다.
+
+단서:
+- Sonnet 608초는 액면 그대로 믿지 말 것. `generateText` 자체 측정치라 cliproxy
+  재시도나 구독 쿨다운일 가능성이 크다. 어느 쪽이든 이 환경에선 쓸 수 없다.
+- 원자화 차이(Sonnet 2건)는 **n=1 이라 강한 근거가 아니다.** 다만 L1 은 각 레코드가
+  독립적으로 벡터 회수되므로, 뭉치면 검색 정확도가 무뎌지는 건 구조적으로 맞다.
+  실사용에서 회상 품질이 아쉬우면 여기를 먼저 의심할 것.
+
+### F12 — 계층별 모델 분리가 설정에는 있는데 동작하지 않는다 ★
+
+```
+cfg.extraction.model   → L1 추출        (config.ts:551, pipeline-factory.ts:607)
+cfg.persona.model      → L2/L3          (pipeline-factory.ts:799,895,1015,1070)
+```
+
+값은 런너까지 전달되지만 **standalone 런너가 무시한다** (`adapters/standalone/llm-runner.ts`):
+
+```ts
+this.model = opts.model ?? opts.config.model;   // :260  생성 시 고정
+model: provider.chat(this.model)                // :322  params.model 을 안 읽는다
+```
+
+`params.model` 을 읽는 코드가 아예 없다. OpenClaw 런너는 `modelRef` 로 받는데
+게이트웨이 경로는 **전 계층 단일 모델**이다.
+
+→ "L1 은 싼 모델, L2/L3 는 좋은 모델" 조합이 현재 불가능하다.
+→ **포크 패치 후보.** `llm-runner.ts` 몇 줄이고 F7 의 effort passthrough 와 같은 자리다.
+   upstream PR 후보로도 유효 (#228 `feat(llm)` 선례와 같은 카테고리).
 
 ### F10 — max effort 는 L1 추출 지연을 3배 이상 늘린다
 

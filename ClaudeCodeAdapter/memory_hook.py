@@ -230,9 +230,20 @@ def main() -> None:
         log(f"stdin parse failed: {e}")
         sys.exit(0)
 
+    # 재귀 가드: 훅 안에서 claude -p 를 부르는 경우, 그 자식 세션의 훅이
+    # 다시 발동해 무한 루프가 된다. 자식은 env 를 상속하므로 여기서 끊는다.
+    if os.environ.get("MEMORY_ADAPTER_GUARD"):
+        log(f"guard hit ({hook.get('hook_event_name')}) — 중첩 실행이므로 skip")
+        sys.exit(0)
+
     cfg = load_config()
     if cfg is None:
         sys.exit(0)
+
+    # 자동화(claude -p 루프)용 경량 모드: L1 만 주입, L3/L2 는 건너뛴다.
+    if os.environ.get("MEMORY_ADAPTER_LEAN"):
+        cfg["inject_persona"] = False
+        cfg["inject_scenes"] = False
 
     event = hook.get("hook_event_name")
     try:
