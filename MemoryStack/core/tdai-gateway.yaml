@@ -1,0 +1,68 @@
+# memory-core (standalone). Mac 검증본과 동일 구성, 경로만 컨테이너 기준.
+deployMode: standalone
+stateBackend: local
+
+server:
+  port: 8420
+  host: 0.0.0.0
+
+data:
+  baseDir: /data/tdai-memory
+
+llm:
+  baseUrl: "http://10.77.0.4:8317/v1"
+  apiKey: "REPLACE_ME"          # cliproxy api-key
+  model: "gpt-5.6-sol-low"      # A/B 결과 (docs/06-M0-RESULT.md F11)
+  maxTokens: 32000
+  timeoutMs: 300000
+
+memory:
+  promptMode: chat
+  capture: { enabled: true }
+  extraction:
+    enabled: true
+    enableDedup: true
+    maxMemoriesPerSession: 20
+  persona:
+    triggerEveryN: 50
+    maxScenes: 15
+  pipeline:
+    everyNConversations: 5
+    enableWarmup: true
+    l1IdleTimeoutSeconds: 600
+    l2DelayAfterL1Seconds: 90
+    l2MinIntervalSeconds: 900
+    l2MaxIntervalSeconds: 3600
+  recall:
+    enabled: true
+    maxResults: 5
+    scoreThreshold: 0.3
+    strategy: hybrid
+    timeoutMs: 5000
+  storeBackend: sqlite
+  embedding:
+    enabled: true
+    provider: openai
+    baseUrl: "http://192.168.88.223:11434/v1"   # dgx ollama
+    apiKey: "ollama"
+    model: "bge-m3"
+    dimensions: 1024
+    sendDimensions: false        # BGE-M3 는 dimensions 파라미터를 400 으로 거부
+    timeoutMs: 30000
+    recallTimeoutMs: 15000       # LAN 경유 감안, Mac 기준 8s 에서 상향
+
+skill:
+  enabled: true
+  routing: { mode: bm25, searchTopK: 20 }
+  extraction:
+    enabled: true
+    maxIterations: 16
+    queue:
+      backend: local
+      keyPrefix: tdai
+      resultTtlSeconds: 86400
+      lockTtlMs: 600000
+      maxRetries: 2
+      retryBackoffsMs: [5000, 15000]
+  resources:
+    maxResourceSizeBytes: 5000000

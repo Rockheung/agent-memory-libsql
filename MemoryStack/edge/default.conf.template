@@ -1,0 +1,57 @@
+# 기억 전용 엔드포인트의 얇은 엣지.
+#
+#   cliproxy.h.rockheung.xyz        → cliproxy 직결        (기억 없음)
+#   cliproxy-memd.h.rockheung.xyz   → 여기 → memory-proxy  (기억 주입·기록)
+#
+# 호스트네임이 스위치다. 모델 이름이 아니라. 그래서 본문 파싱도, njs 도 필요 없다.
+#
+# 이 엣지가 하는 일은 딱 둘:
+#   1. 정체성 헤더 주입 — BrowserOS 등 클라이언트 프로바이더 설정에는
+#      커스텀 헤더 필드가 없다. MemoryProxy 의 headerAutoSelect 가 요구하는
+#      x-team-id / x-agent-id / x-task-id 를 여기서 붙여 세션 폼을 건너뛴다.
+#   2. /v1/models 우회 — MemoryProxy 화이트리스트에 models 가 없어
+#      (src/routes/whitelist.ts) 404 가 난다. cliproxy 것을 그대로 내준다.
+
+map $http_x_conversation_id $conv_id {
+    ""      $request_id;
+    default $http_x_conversation_id;
+}
+
+server {
+    listen 8080;
+    server_name _;
+    client_max_body_size 64m;
+
+    # 모델 목록: memory-proxy 가 모르는 경로라 cliproxy 로 직접
+    location = /v1/models {
+        proxy_pass ${UPSTREAM_BASE}/v1/models;
+        proxy_set_header Authorization $http_authorization;
+    }
+
+    # 나머지 전부 memory-proxy 로. 경로 앞에 /{agent-source}/{spaceId} 를 붙인다.
+    location / {
+        proxy_pass http://proxy:8096/${AGENT_SOURCE}/${SPACE_ID}$request_uri;
+
+        # SSE 스트리밍 — 끄지 않으면 응답이 끝까지 뭉친다 (로컬 실측 확인)
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization     $http_authorization;
+
+        # 클라이언트가 못 보내는 정체성
+        proxy_set_header x-team-id         "${TEAM_ID}";
+        proxy_set_header x-agent-id        "${AGENT_ID}";
+        proxy_set_header x-task-id         "${TASK_ID}";
+        proxy_set_header x-conversation-id $conv_id;
+        proxy_set_header x-tdai-service-id "${SPACE_ID}";
+    }
+
+    location = /healthz { return 200 "ok\n"; add_header Content-Type text/plain; }
+}

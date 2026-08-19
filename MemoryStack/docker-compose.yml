@@ -1,0 +1,109 @@
+# Memory Stack — cliproxy 앞단에 기억을 끼우는 3층 세트
+#
+#   BrowserOS / LibreChat / 임의 OpenAI 호환 클라이언트
+#         │  (헤더 못 보냄)
+#         ▼
+#   edge (nginx)     :${EDGE_PORT}   ← team/agent/task 헤더 주입
+#         ▼
+#   memory-proxy     :8096           ← 세션·주입·기록
+#         ▼
+#   cliproxy         (외부)          ← 모델 라우팅·effort·web_search
+#         ▼
+#   memory-core      :8420           ← L0~L3 저장·추출  (proxy 가 옆으로 호출)
+#
+# edge 만 외부에 노출한다. core/proxy 는 내부 네트워크 전용.
+
+name: memory-stack
+
+services:
+  core:
+    image: ${MEMORY_CORE_IMAGE:-agentmemory/memory-core:latest}
+    container_name: ms-core
+    restart: unless-stopped
+    environment:
+      TDAI_GATEWAY_PORT: "8420"
+      TDAI_GATEWAY_HOST: "0.0.0.0"
+      # 비우면 데이터 평면이 "비어있지 않은 아무 Bearer" 나 통과시킨다.
+      # 내부망 전용이라도 반드시 채울 것. (docs/06-M0-RESULT.md F3)
+      TDAI_GATEWAY_API_KEY: "${GATEWAY_API_KEY:?GATEWAY_API_KEY 를 .env 에 설정하세요}"
+      TDAI_DATA_DIR: /data/tdai-memory
+    volumes:
+      - core-data:/data/tdai-memory
+      - ./core/tdai-gateway.yaml:/data/config/tdai-gateway.yaml:ro
+    networks: [ms]
+    # 외부 비노출. 디버깅 때만 아래 주석 해제.
+    # ports: ["8420:8420"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8420/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # MemoryProxy 의 config 로더는 ${VAR} 치환을 systemUsers 블록에만 적용한다
+  # (src/config.ts:481-484). 나머지는 literal 로 들어가므로 여기서 미리 렌더링한다.
+  proxy-config:
+    image: nginx:1.27-alpine        # envsubst 가 들어있어 그대로 재사용
+    container_name: ms-proxy-config
+    environment:
+      PROXY_UPSTREAM_URL: ${PROXY_UPSTREAM_URL:?}
+      PROXY_UPSTREAM_API_KEY: ${PROXY_UPSTREAM_API_KEY:?}
+      GATEWAY_API_KEY: "${GATEWAY_API_KEY:?}"
+    volumes:
+      - ./proxy:/src:ro
+      - proxy-conf:/out
+    command: >-
+      sh -c 'envsubst "$$PROXY_UPSTREAM_URL $$PROXY_UPSTREAM_API_KEY $$GATEWAY_API_KEY"
+             < /src/config.yaml.template > /out/config.yaml && echo rendered'
+    networks: [ms]
+
+  proxy:
+    image: ${MEMORY_PROXY_IMAGE:-agentmemory/memory-proxy:latest}
+    container_name: ms-proxy
+    restart: unless-stopped
+    depends_on:
+      core: {condition: service_healthy}
+      proxy-config: {condition: service_completed_successfully}
+    volumes:
+      - proxy-conf:/app/conf:ro
+      - proxy-data:/app/data
+    command: ["node", "--import", "tsx/esm", "src/index.ts", "--config", "/app/conf/config.yaml"]
+    networks: [ms]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8096/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  edge:
+    image: nginx:1.27-alpine      # 순정. njs 불필요 (호스트네임이 스위치)
+    container_name: ms-edge
+    restart: unless-stopped
+    depends_on: [proxy]
+    ports: ["${EDGE_PORT:-8090}:8080"]
+    environment:
+      TEAM_ID: "${TEAM_ID:?TEAM_ID 를 .env 에 설정하세요 (bootstrap.sh 가 출력)}"
+      AGENT_ID: "${AGENT_ID:?AGENT_ID 를 .env 에 설정하세요}"
+      TASK_ID: ${TASK_ID:-}
+      AGENT_SOURCE: ${AGENT_SOURCE:-codebuddy}
+      SPACE_ID: ${SPACE_ID:-default}
+      # /v1 을 붙이지 않은 베이스. 엣지가 $request_uri 를 그대로 이어붙인다.
+      UPSTREAM_BASE: "${UPSTREAM_BASE:?UPSTREAM_BASE 를 .env 에 설정하세요}"
+    volumes:
+      - ./edge/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks: [ms]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+networks:
+  ms:
+    driver: bridge
+
+volumes:
+  core-data:
+  proxy-data:
+  proxy-conf:
