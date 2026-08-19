@@ -621,9 +621,29 @@ export class TdaiGateway {
     // In standalone mode, use LocalStorageBackend pointing to dataDir.
     // In service mode, CosStorageBackend was already injected above.
     if (!this.core.getStorage()) {
-      const backend = new LocalStorageBackend(this.config.data.baseDir);
-      this.core.setStorage(new StorageAdapter(backend));
-      this.logger.info(`${TAG} StorageAdapter initialized (local: ${this.config.data.baseDir})`);
+      // S3 호환 오브젝트 스토리지가 설정돼 있으면 그쪽을 쓴다 (L2/L3 마크다운,
+      // JSONL, checkpoint, 생성 이력이 전부 여기로 간다). 없으면 기존 로컬 FS.
+      const s3Url = process.env.TDAI_STORAGE_S3_ENDPOINT?.trim();
+      if (s3Url) {
+        const { createStorageBackend } = await import("../core/storage/factory.js");
+        const backend = await createStorageBackend({
+          type: "cos",
+          s3: {
+            endpoint: s3Url,
+            region: process.env.TDAI_STORAGE_S3_REGION ?? "us-east-1",
+            bucket: process.env.TDAI_STORAGE_S3_BUCKET ?? "",
+            accessKeyId: process.env.TDAI_STORAGE_S3_ACCESS_KEY_ID ?? "",
+            secretAccessKey: process.env.TDAI_STORAGE_S3_SECRET_ACCESS_KEY ?? "",
+            keyPrefix: process.env.TDAI_STORAGE_S3_PREFIX,
+          },
+        }, this.logger);
+        this.core.setStorage(new StorageAdapter(backend));
+        this.logger.info(`${TAG} StorageAdapter initialized (s3: ${s3Url})`);
+      } else {
+        const backend = new LocalStorageBackend(this.config.data.baseDir);
+        this.core.setStorage(new StorageAdapter(backend));
+        this.logger.info(`${TAG} StorageAdapter initialized (local: ${this.config.data.baseDir})`);
+      }
     }
 
     // ── Skill module post-wiring (after storage is set) ──
@@ -2425,9 +2445,14 @@ export class TdaiGateway {
 
     // Standalone mode: fall back to local storage (no COS needed)
     if (!this.sharedCosClient && this.config.deployMode === "standalone") {
-      const localDir = this.config.data.baseDir;
-      const backend = new LocalStorageBackend({ rootDir: localDir, logger: this.logger });
-      const adapter = new StorageAdapter(backend);
+      // core 에 이미 원격 StorageAdapter 가 설정돼 있으면(예: S3 호환 오브젝트
+      // 스토리지) 그것을 재사용한다. 이 분기가 무조건 LocalStorageBackend 를
+      // 만들면, 게이트웨이가 S3 를 쓰도록 설정돼 있어도 L0/L1 JSONL·checkpoint·
+      // 생성 이력이 전부 로컬 디스크로 새어나간다.
+      const shared = this.core.getStorage();
+      const adapter = shared && shared.type !== "local"
+        ? shared
+        : new StorageAdapter(new LocalStorageBackend({ rootDir: this.config.data.baseDir, logger: this.logger }));
       if (!this.cosStorageCache) this.cosStorageCache = new Map();
       this.cosStorageCache.set(instanceId, adapter);
       return adapter;

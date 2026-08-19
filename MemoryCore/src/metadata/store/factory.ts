@@ -8,6 +8,7 @@ import { SqliteMetadataStore } from "./sqlite-adapter.js";
 import {
   DEFAULT_METADATA_DB_PREFIX,
   resolveMetadataDbName,
+  sanitizeInstanceIdForDb,
   resolveSqliteDbDir,
   resolveSqliteDbPath,
 } from "./db-name.js";
@@ -16,6 +17,16 @@ export interface MetadataStoreConfig {
   backend: MetadataBackend;
   /** SQLite 根目录（backend=sqlite）。每个实例：{baseDir}/tdai_metadata_{id}/metadata.db */
   sqliteBaseDir?: string;
+  /**
+   * libSQL/Turso 접속 URL (backend=libsql).
+   * `{instance}` 플레이스홀더를 넣으면 인스턴스별로 치환된다:
+   *   libsql://memd-{instance}-org.turso.io
+   * 플레이스홀더가 없으면 모든 인스턴스가 **한 DB 를 공유**한다 (단일 테넌트 기본).
+   * Turso 는 DB 생성이 platform API 라 런타임에 새 DB 를 만들 수 없다.
+   */
+  libsqlUrl?: string;
+  /** libSQL 인증 토큰 (backend=libsql). */
+  libsqlAuthToken?: string;
   /** MongoDB 连接串（backend=mongodb）。 */
   mongoUri?: string;
   /** MongoDB 是否启用事务（默认 true，需副本集）。 */
@@ -44,14 +55,22 @@ function hasExplicitSqliteBaseDir(env: NodeJS.ProcessEnv): boolean {
   return !!env.TDAI_METADATA_SQLITE_BASE_DIR?.trim();
 }
 
+function hasExplicitLibsqlUrl(env: NodeJS.ProcessEnv): boolean {
+  return !!env.TDAI_METADATA_LIBSQL_URL?.trim();
+}
+
 /**
  * Mongo 与 SQLite 根目录不可同时显式配置（env / yaml 回填后校验）。
  */
 export function assertMetadataStoreConfigExclusive(env: NodeJS.ProcessEnv = process.env): void {
-  if (hasExplicitMongoUri(env) && hasExplicitSqliteBaseDir(env)) {
+  const explicit = [
+    hasExplicitMongoUri(env) && "TDAI_METADATA_MONGO_URI",
+    hasExplicitSqliteBaseDir(env) && "TDAI_METADATA_SQLITE_BASE_DIR",
+    hasExplicitLibsqlUrl(env) && "TDAI_METADATA_LIBSQL_URL",
+  ].filter(Boolean) as string[];
+  if (explicit.length > 1) {
     throw new MetadataStartupValidationError(
-      "Metadata startup validation failed: set either TDAI_METADATA_MONGO_URI or " +
-        "TDAI_METADATA_SQLITE_BASE_DIR, not both",
+      `Metadata startup validation failed: set only one of ${explicit.join(" / ")}`,
     );
   }
 }
@@ -81,6 +100,17 @@ export function loadStoreConfig(
 
   const mongoDbPrefix =
     env.TDAI_METADATA_MONGO_DB_PREFIX?.trim() || DEFAULT_METADATA_DB_PREFIX;
+
+  const libsqlUrl = env.TDAI_METADATA_LIBSQL_URL?.trim();
+  if (libsqlUrl) {
+    return {
+      backend: "libsql",
+      libsqlUrl,
+      libsqlAuthToken: env.TDAI_METADATA_LIBSQL_AUTH_TOKEN?.trim(),
+      storeCacheMaxInstances,
+      mongoDbPrefix,
+    };
+  }
 
   if (mongoUri) {
     return {
@@ -133,6 +163,17 @@ export function validateMetadataStartupConfig(
 /**
  * 构造并初始化单个实例库的 IMetadataStore。
  */
+/**
+ * libSQL URL 의 `{instance}` 플레이스홀더를 인스턴스별 DB 이름으로 치환한다.
+ * 플레이스홀더가 없으면 원본을 그대로 쓴다 = 모든 인스턴스가 한 DB 를 공유.
+ * (Turso 는 DB 생성이 platform API 라 런타임에 새 DB 를 못 만든다. 인스턴스별
+ *  분리가 필요하면 운영자가 미리 만들어 두고 플레이스홀더를 쓴다.)
+ */
+function resolveLibsqlUrl(template: string, instanceId: string, dbPrefix?: string): string {
+  if (!template.includes("{instance}")) return template;
+  return template.replace("{instance}", sanitizeInstanceIdForDb(instanceId));
+}
+
 export async function createMetadataStore(
   config: MetadataStoreConfig,
   instanceId: string,
@@ -142,6 +183,18 @@ export async function createMetadataStore(
       const baseDir = config.sqliteBaseDir ?? DEFAULT_SQLITE_BASE;
       const dbPath = resolveSqliteDbPath(baseDir, instanceId, config.mongoDbPrefix);
       const store = new SqliteMetadataStore(dbPath);
+      await store.init();
+      return store;
+    }
+    case "libsql": {
+      if (!config.libsqlUrl) {
+        throw new Error("TDAI_METADATA_LIBSQL_URL is required when backend=libsql");
+      }
+      const { LibsqlMetadataStore } = await import("./libsql-adapter.js");
+      const store = new LibsqlMetadataStore({
+        url: resolveLibsqlUrl(config.libsqlUrl, instanceId, config.mongoDbPrefix),
+        authToken: config.libsqlAuthToken,
+      });
       await store.init();
       return store;
     }
