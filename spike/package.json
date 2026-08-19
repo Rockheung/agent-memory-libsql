@@ -1,2 +1,1 @@
-{ "name": "turso-spike", "private": true, "type": "module",
-  "dependencies": { "@libsql/client": "^0.15.0" } }
+{"name":"turso-spike","private":true,"type":"module","dependencies":{"@libsql/client":"^0.15.0","libsql":"^0.5.29"}}
