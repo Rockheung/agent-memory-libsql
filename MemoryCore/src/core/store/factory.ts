@@ -127,7 +127,7 @@ export async function createStoreBundle(
         store,
         embedding: embeddingService as unknown as IEmbeddingService,
         bm25Encoder,
-        storeSnapshot: { type: "libsql", libsqlUrl: config.libsql.url } as never,
+        storeSnapshot: { type: "libsql", libsqlUrl: config.libsql.url },
       };
     }
 
