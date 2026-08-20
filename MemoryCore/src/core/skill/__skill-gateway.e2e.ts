@@ -1,7 +1,7 @@
 /** Skill 활성 상태로 게이트웨이 기동 → HTTP API 로 끝까지 확인 */
 import fs from "node:fs"; import os from "node:os"; import path from "node:path"; import http from "node:http";
-import { TdaiGateway } from "./src/gateway/server.js";
-import { loadGatewayConfig } from "./src/gateway/config.js";
+import { TdaiGateway } from "../../gateway/server.js";
+import { loadGatewayConfig } from "../../gateway/config.js";
 
 const PORT=18713, KEY="verify-skill";
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(),"vskill-"));

@@ -1,7 +1,7 @@
 /** LibsqlSkillStore e2e — 실제 Turso 에 대해 스키마·CRUD·버전·검색 확인 */
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { LibsqlSkillStore } from "./src/core/skill/libsql-skill-store.js";
+import { LibsqlSkillStore } from "./libsql-skill-store.js";
 const env = Object.fromEntries(readFileSync(process.env.HOME+"/.config/turso.env","utf8")
   .split("\n").filter(Boolean).map(l=>{const i=l.indexOf("=");return [l.slice(0,i),l.slice(i+1)];}));
 

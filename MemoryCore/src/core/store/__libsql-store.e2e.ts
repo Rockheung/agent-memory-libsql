@@ -1,6 +1,6 @@
 /** LibsqlVectorStore e2e — 실제 Turso 에 스키마 생성 + L0/L1 왕복 + KNN 확인 */
 import { readFileSync } from "node:fs";
-import { LibsqlVectorStore } from "./src/core/store/libsql-store.js";
+import { LibsqlVectorStore } from "./libsql-store.js";
 const env = Object.fromEntries(readFileSync(process.env.HOME+"/.config/turso.env","utf8")
   .split("\n").filter(Boolean).map(l=>{const i=l.indexOf("=");return [l.slice(0,i),l.slice(i+1)];}));
 

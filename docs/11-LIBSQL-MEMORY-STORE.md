@@ -137,3 +137,56 @@ S3     vskill3/skills/skl-CLywpgSCTIun/v1/files/probe.sh
 기동 초기에 `Skill wiring deferred: vectorStore not ready` 가 두 번 찍히지만,
 `setStorage()` 이후 `ensureSkillModuleWired()` 재시도가 실제로 성공한다
 (`gateway/server.ts:656`). 위 e2e 가 그 증거다 — 배선이 안 됐다면 create 가 아예 실패한다.
+
+---
+
+# 부록 2 — libSQL 벡터 인덱스의 함정: `DELETE FROM t` ★
+
+**증상**: 어느 시점부터 모든 벡터 쓰기가 실패한다.
+
+```
+SQLITE_UNKNOWN: SQLite error: vector index(insert): failed to insert shadow row
+```
+
+**원인**: `WHERE` 절 **없는** `DELETE FROM <table>` 이 벡터 인덱스의 shadow 테이블을
+망가뜨린다. SQLite 의 truncate optimization 이 인덱스 유지를 건너뛰기 때문으로 보인다.
+
+libSQL 네이티브 벡터 인덱스는 shadow 테이블 3종을 만든다:
+```
+l1_vec_idx_shadow / l1_vec_idx_shadow_idx / libsql_vector_meta_shadow
+```
+
+**실측으로 좁힌 결과 — `WHERE` 하나로 갈린다:**
+
+| 문장 | 결과 |
+|---|---|
+| `DELETE FROM t` | ❌ **인덱스 깨짐** |
+| `DELETE FROM t WHERE 1=1` | ✅ 안전 |
+| `DELETE FROM t WHERE id IS NOT NULL` | ✅ 안전 |
+| `DELETE FROM t WHERE id=?` (개별) | ✅ 안전 |
+| `DELETE FROM t WHERE updated_time < ?` (만료) | ✅ 안전 |
+
+**복구**: `REINDEX <index_name>` 으로 된다. DROP/CREATE 도 가능하다.
+
+```sql
+REINDEX l0_vec_idx;  REINDEX l1_vec_idx;  REINDEX skill_vec_idx;
+```
+
+## 코드에 미치는 영향 — 없다
+
+`LibsqlVectorStore` / `LibsqlSkillStore` 의 삭제 경로는 **전부 WHERE 를 쓴다**:
+- upsert = `DELETE ... WHERE record_id = ?` + INSERT
+- 만료 = `DELETE ... WHERE updated_time != '' AND updated_time < ?`
+- `clearMemoryContent` = 격리 조건부 삭제
+
+즉 **운영 경로는 안전하다.** 이 함정을 밟은 건 테스트 정리 스크립트가
+`DELETE FROM l0_vec` 를 쓴 것이었다.
+
+## 규칙
+
+> **벡터 테이블에는 `WHERE` 없는 `DELETE` 를 절대 쓰지 않는다.**
+> 전체를 비워야 하면 `DELETE FROM t WHERE 1=1` 또는 `DROP TABLE` 후 재생성한다.
+> 이미 밟았다면 `REINDEX` 로 복구된다.
+
+테스트/정리 스크립트에도 같은 규칙이 적용된다 — 실제로 이것 때문에 e2e 가
+7/7 → 3/7 로 떨어졌고, 회귀로 오인할 뻔했다.
