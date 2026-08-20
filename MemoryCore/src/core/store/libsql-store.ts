@@ -421,21 +421,37 @@ function buildVecSearchSql(layer: "l1" | "l0", where = ""): string {
   `;
 }
 
+
+/**
+ * 바인딩 값 정규화.
+ *
+ * `node:sqlite` 는 `undefined` 를 NULL 로 받아주지만 `@libsql/client` 는
+ * "Unsupported type of value" 로 거부한다. 원본 호출부가 선택적 인자를 그대로
+ * 넘기는 곳이 많아, 드라이버 경계에서 흡수한다.
+ * Float32Array/Buffer 도 vector32() 가 받는 JSON 문자열로 바꿔준다.
+ */
+function toInValue(v: unknown): InValue {
+  if (v === undefined || v === null) return null;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (v instanceof Float32Array) return "[" + Array.from(v).join(",") + "]";
+  return v as InValue;
+}
+
 class Stmt {
   constructor(private readonly db: () => Client, private readonly sql: string) {}
 
-  async run(...args: InValue[]): Promise<{ changes: number }> {
-    const r = await this.db().execute({ sql: this.sql, args });
+  async run(...args: unknown[]): Promise<{ changes: number }> {
+    const r = await this.db().execute({ sql: this.sql, args: args.map(toInValue) });
     return { changes: Number(r.rowsAffected ?? 0) };
   }
 
-  async get<T = Record<string, InValue>>(...args: InValue[]): Promise<T | undefined> {
-    const r = await this.db().execute({ sql: this.sql, args });
+  async get<T = Record<string, InValue>>(...args: unknown[]): Promise<T | undefined> {
+    const r = await this.db().execute({ sql: this.sql, args: args.map(toInValue) });
     return r.rows[0] as T | undefined;
   }
 
-  async all<T = Record<string, InValue>>(...args: InValue[]): Promise<T[]> {
-    const r = await this.db().execute({ sql: this.sql, args });
+  async all<T = Record<string, InValue>>(...args: unknown[]): Promise<T[]> {
+    const r = await this.db().execute({ sql: this.sql, args: args.map(toInValue) });
     return r.rows as unknown as T[];
   }
 }

@@ -4,6 +4,7 @@
  *
  * Supports:
  * - "sqlite" (default): local SQLite + sqlite-vec + FTS5
+ * - "libsql": libSQL/Turso (네이티브 벡터 + FTS5, 관리형)
  * - "tcvdb": Tencent Cloud VectorDB (server-side embedding + hybridSearch)
  *
  * Both backends ship with core — TCVDB is a vendor-provided store that has
@@ -42,10 +43,10 @@ export interface StoreBundle {
  * @param options.dataDir    Plugin data directory.
  * @param options.logger     Logger instance.
  */
-export function createStoreBundle(
+export async function createStoreBundle(
   config: MemoryTdaiConfig,
   options: { dataDir: string; logger?: StoreLogger },
-): StoreBundle {
+): Promise<StoreBundle> {
   const { logger } = options;
 
   // ── BM25 local encoder ──
@@ -91,6 +92,42 @@ export function createStoreBundle(
           tcvdbDatabase: database,
           tcvdbAlias: tcvdbCfg.alias || undefined,
         },
+      };
+    }
+
+    case "libsql": {
+      if (!config.libsql?.url) {
+        throw new Error(`${TAG} libsql backend requires libsql.url (또는 TDAI_STORE_LIBSQL_URL)`);
+      }
+      // sqlite 분기와 동일한 임베딩 서비스 구성. 차이는 저장소뿐이다.
+      let embeddingService: EmbeddingService | undefined;
+      if (config.embedding.enabled && config.embedding.provider !== "local" && config.embedding.apiKey) {
+        embeddingService = createEmbeddingService({
+          provider: config.embedding.provider,
+          baseUrl: config.embedding.baseUrl,
+          apiKey: config.embedding.apiKey,
+          model: config.embedding.model,
+          dimensions: config.embedding.dimensions,
+          sendDimensions: config.embedding.sendDimensions,
+          maxInputChars: config.embedding.maxInputChars,
+        }, logger);
+      }
+      const { LibsqlVectorStore } = await import("./libsql-store.js");
+      const store = new LibsqlVectorStore(
+        { url: config.libsql.url, authToken: config.libsql.authToken },
+        config.embedding.dimensions,
+        logger,
+      );
+      logger?.debug?.(
+        `${TAG} Store created: backend=libsql, url=${config.libsql.url}, ` +
+        `dimensions=${config.embedding.dimensions}, ` +
+        `embedding=${embeddingService ? "enabled" : "disabled"}, bm25=${bm25Encoder ? "enabled" : "disabled"}`,
+      );
+      return {
+        store,
+        embedding: embeddingService as unknown as IEmbeddingService,
+        bm25Encoder,
+        storeSnapshot: { type: "libsql", libsqlUrl: config.libsql.url } as never,
       };
     }
 

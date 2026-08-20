@@ -1809,7 +1809,12 @@ export class TdaiGateway {
       ? (process.env.STORE_MODE as "sqlite" | "tcvdb")
       : undefined;
     this.storePool = new StorePool({
-      mode: storeModeOverride ?? (this.config.deployMode === "service" ? "tcvdb" : "sqlite"),
+      // deployMode 만 보면 memory.storeBackend 설정이 무시된다. libsql 을 고른 경우
+      // 데이터 평면이 계속 로컬 SQLite 를 쓰게 되므로 백엔드 설정을 우선한다.
+      mode: storeModeOverride
+        ?? (this.config.memory.storeBackend === "libsql" ? "libsql"
+          : this.config.deployMode === "service" ? "tcvdb" : "sqlite"),
+      libsql: this.config.memory.libsql,
       memoryCfg: this.config.memory,
       dataDir: this.config.data.baseDir,
       maxStores: this.config.shark.maxInstances,

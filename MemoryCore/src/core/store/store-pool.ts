@@ -56,7 +56,7 @@ interface Logger {
   error: (message: string) => void;
 }
 
-export type StoreMode = "sqlite" | "tcvdb";
+export type StoreMode = "sqlite" | "libsql" | "tcvdb";
 
 export interface KafkaMetricOptions {
   /** Kafka Broker 列表 (逗号分隔或数组) */
@@ -68,8 +68,10 @@ export interface KafkaMetricOptions {
 }
 
 export interface StorePoolOptions {
-  /** 存储模式: "sqlite" (standalone 本地) 或 "tcvdb" (service 远程) */
+  /** 存储模式: "sqlite" (standalone 本地) / "libsql" (Turso 관리형) / "tcvdb" (service 远程) */
   mode: StoreMode;
+  /** libSQL/Turso 접속 정보 (mode="libsql"). */
+  libsql?: { url: string; authToken?: string };
   /** 记忆插件配置 (用于 BM25/embedding 设置) */
   memoryCfg: MemoryTdaiConfig;
   /** 数据目录 (SQLite 模式下使用) */
@@ -91,6 +93,7 @@ export class StorePool {
   private pool = new Map<string, PoolEntry>();
   private maxStores: number;
   readonly mode: StoreMode;
+  private libsqlCfg?: { url: string; authToken?: string };
   private memoryCfg: MemoryTdaiConfig;
   private dataDir: string;
   private logger: Logger;
@@ -119,6 +122,7 @@ export class StorePool {
     this.maxStores = opts.maxStores ?? 100;
     this.maxSkillStores = opts.maxSkillStores ?? 100;
     this.mode = opts.mode;
+    this.libsqlCfg = opts.libsql;
     this.memoryCfg = opts.memoryCfg;
     this.dataDir = opts.dataDir ?? ".";
     this.logger = opts.logger;
@@ -172,7 +176,7 @@ export class StorePool {
     const now = Date.now();
     const fingerprint = this.mode === "tcvdb" && vdbConfig
       ? this.computeFingerprint(vdbConfig)
-      : `sqlite:${instanceId}`;
+      : `${this.mode}:${instanceId}`;
     const cached = this.pool.get(instanceId);
 
     // 命中且配置未变
@@ -195,7 +199,9 @@ export class StorePool {
     // 创建新 Store
     const pooledStore = this.mode === "tcvdb" && vdbConfig
       ? this.createTcvdbStore(vdbConfig)
-      : this.createSqliteStore(instanceId);
+      : this.mode === "libsql"
+        ? await this.createLibsqlStore(instanceId)
+        : this.createSqliteStore(instanceId);
 
     this.pool.set(instanceId, {
       pooledStore,
@@ -205,7 +211,7 @@ export class StorePool {
 
     const storeDesc = this.mode === "tcvdb" && vdbConfig
       ? `${vdbConfig.url} / ${vdbConfig.database}`
-      : `sqlite @ ${this.getSqlitePath(instanceId)}`;
+      : this.mode === "libsql" ? `libsql @ ${this.libsqlCfg?.url}` : `sqlite @ ${this.getSqlitePath(instanceId)}`;
     this.logger.info(
       `${TAG} Created ${this.mode} store for ${instanceId}: ${storeDesc} (pool size: ${this.pool.size})`,
     );
@@ -368,6 +374,44 @@ export class StorePool {
   // ════════════════════════════════════════════════════════
   // Internal — SQLite Store
   // ════════════════════════════════════════════════════════
+
+  /**
+   * libSQL/Turso 스토어. 임베딩 구성은 sqlite 분기와 동일하고 저장소만 다르다.
+   * 인스턴스별 DB 분리는 URL 의 `{instance}` 플레이스홀더로 한다
+   * (Turso 는 DB 생성이 platform API 라 런타임에 못 만든다).
+   */
+  private async createLibsqlStore(instanceId: string): Promise<PooledStore> {
+    const cfg = this.libsqlCfg;
+    if (!cfg?.url) throw new Error(`${TAG} mode=libsql 인데 libsql.url 이 없다`);
+    const { LibsqlVectorStore } = await import("./libsql-store.js");
+    const url = cfg.url.includes("{instance}")
+      ? cfg.url.replace("{instance}", instanceId.replace(/[^A-Za-z0-9_-]/g, "_"))
+      : cfg.url;
+    const store = new LibsqlVectorStore(
+      { url, authToken: cfg.authToken },
+      this.memoryCfg.embedding.dimensions ?? 0,
+      this.logger as StoreLogger,
+    );
+    return {
+      store,
+      embedding: (this.buildEmbeddingService() ?? new NoopEmbeddingService()) as unknown as EmbeddingService,
+      bm25Encoder: this.sharedBm25Encoder,
+    };
+  }
+
+  /** sqlite / libsql 이 공유하는 임베딩 서비스 구성. */
+  private buildEmbeddingService(): EmbeddingService | undefined {
+    const embCfg = this.memoryCfg.embedding;
+    if (!(embCfg.enabled && embCfg.provider !== "local" && embCfg.provider !== "none" && embCfg.apiKey)) return undefined;
+    return createEmbeddingService({
+      provider: embCfg.provider,
+      baseUrl: embCfg.baseUrl,
+      apiKey: embCfg.apiKey,
+      model: embCfg.model,
+      dimensions: embCfg.dimensions,
+      maxInputChars: embCfg.maxInputChars,
+    }, this.logger as StoreLogger);
+  }
 
   private createSqliteStore(instanceId: string): PooledStore {
     // Embedding service (远端 API, 如 OpenAI text-embedding)
