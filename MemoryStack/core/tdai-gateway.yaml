@@ -39,7 +39,9 @@ memory:
     scoreThreshold: 0.3
     strategy: hybrid
     timeoutMs: 5000
-  storeBackend: sqlite
+  # L0/L1 + 벡터 + Skill 을 Turso 로. 접속 정보는 TDAI_STORE_LIBSQL_* env 로 주입된다
+  # (config.ts 파서가 env 를 폴백으로 읽는다).
+  storeBackend: libsql
   embedding:
     enabled: true
     provider: openai
@@ -49,8 +51,10 @@ memory:
     dimensions: 1024
     sendDimensions: false        # BGE-M3 는 dimensions 파라미터를 400 으로 거부
     timeoutMs: 30000
-    recallTimeoutMs: 15000       # LAN 경유 감안, Mac 기준 8s 에서 상향
+    recallTimeoutMs: 15000       # oci-ko → dgx LAN 경유 감안
 
+# Skill — 재사용 가능한 절차를 대화에서 추출/보관한다 (4대 자산 중 하나).
+# 본문은 Turso skills 테이블에, files/ 첨부는 오브젝트 스토리지에 간다.
 skill:
   enabled: true
   routing: { mode: bm25, searchTopK: 20 }
