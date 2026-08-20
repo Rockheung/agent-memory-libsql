@@ -75,6 +75,7 @@ import type {
   ExtractorLLMRunner,
 } from "./skill/index.js";
 import type { Skill } from "./skill/types.js";
+import type { ISkillStore } from "./skill/skill-store.interface.js";
 
 const TAG = "[memory-tdai] [core]";
 
@@ -864,6 +865,28 @@ export class TdaiCore {
         getRawDb?: () => unknown;
         getEmbeddingDimensions?: () => number;
       };
+      const dims0 =
+        typeof rawDbCarrier.getEmbeddingDimensions === "function"
+          ? rawDbCarrier.getEmbeddingDimensions()
+          : (this.cfg.embedding.dimensions ?? 0);
+
+      // 백엔드별 Skill 스토어를 먼저 고른다. 아래 배선(리소스/버저닝/SkillCore)은 공통이다.
+      //
+      // libSQL 은 원시 핸들 타입이 달라 SqliteSkillStore 를 못 쓴다. 같은 Turso DB 를
+      // 가리키는 전용 스토어를 붙이면 skills/skill_fts/skill_vec 가 메모리 테이블과
+      // 같은 DB 에 동거하는 구조는 그대로 유지된다.
+      let skillStore: ISkillStore;
+      if (this.cfg.storeBackend === "libsql") {
+        const { LibsqlSkillStore } = await import("./skill/libsql-skill-store.js");
+        const st = new LibsqlSkillStore({
+          url: this.cfg.libsql.url,
+          authToken: this.cfg.libsql.authToken,
+          dimensions: dims0,
+          logger: this.logger,
+        });
+        await st.init();
+        skillStore = st;
+      } else {
       if (typeof rawDbCarrier.getRawDb !== "function") {
         this.logger.warn(
           `${TAG} Skill wiring skipped: vectorStore does not expose getRawDb() (only SQLite-backed VectorStore is supported in MVP)`,
@@ -876,12 +899,10 @@ export class TdaiCore {
           ? rawDbCarrier.getEmbeddingDimensions()
           : (this.cfg.embedding.dimensions ?? 0);
 
-      const skillStore = new SqliteSkillStore({
-        db,
-        dimensions,
-        logger: this.logger,
-      });
-      skillStore.init();
+      const st = new SqliteSkillStore({ db, dimensions, logger: this.logger });
+      st.init();
+      skillStore = st;
+      }
 
       const skillResources = new SkillResourceStore({
         storage: this.storage,

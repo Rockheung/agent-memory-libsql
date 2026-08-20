@@ -180,7 +180,7 @@ export interface TcvdbConfig {
 }
 
 /** Storage backend type. */
-export type StoreBackend = "sqlite" | "tcvdb";
+export type StoreBackend = "sqlite" | "libsql" | "tcvdb";
 
 /** Report settings — controls metric/event reporting. */
 export interface ReportConfig {
@@ -307,6 +307,14 @@ export interface OffloadConfig {
   compactionTimeoutMs?: number;
 }
 
+/** libSQL/Turso 저장소 설정 (storeBackend = "libsql"). */
+export interface LibsqlConfig {
+  /** libsql://... (Turso) 또는 file:... (로컬 libSQL 파일) */
+  url: string;
+  /** Turso 인증 토큰. 로컬 파일이면 생략. */
+  authToken?: string;
+}
+
 /** Fully resolved plugin configuration (v3). */
 export interface MemoryTdaiConfig {
   /** Global prompt family; group-level promptMode can override it. */
@@ -321,6 +329,8 @@ export interface MemoryTdaiConfig {
   storeBackend: StoreBackend;
   /** Tencent Cloud VectorDB configuration (required when storeBackend = "tcvdb") */
   tcvdb: TcvdbConfig;
+  /** libSQL/Turso configuration (required when storeBackend = "libsql") */
+  libsql: LibsqlConfig;
   /** BM25 sparse vector encoding (local @tencentdb-agent-memory/tcvdb-text) */
   bm25: BM25Config;
   /** Local JSONL cleanup settings */
@@ -477,7 +487,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
 
   // --- Store backend ---
   const storeBackendRaw = str(c, "storeBackend") ?? "sqlite";
-  const storeBackend: StoreBackend = storeBackendRaw === "tcvdb" ? "tcvdb" : "sqlite";
+  const storeBackend: StoreBackend =
+    storeBackendRaw === "tcvdb" ? "tcvdb"
+    : storeBackendRaw === "libsql" ? "libsql"
+    : "sqlite";
 
   // --- TCVDB config ---
   const tcvdbGroup = obj(c, "tcvdb");
@@ -595,6 +608,10 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       configError: embeddingConfigError,
     },
     storeBackend,
+    libsql: {
+      url: str(obj(c, "libsql"), "url") ?? process.env.TDAI_STORE_LIBSQL_URL ?? "",
+      authToken: str(obj(c, "libsql"), "authToken") ?? process.env.TDAI_STORE_LIBSQL_AUTH_TOKEN,
+    },
     tcvdb: {
       url: str(tcvdbGroup, "url") ?? "",
       username: str(tcvdbGroup, "username") ?? "root",
