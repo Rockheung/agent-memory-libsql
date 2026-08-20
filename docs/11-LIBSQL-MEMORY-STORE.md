@@ -92,3 +92,48 @@ L1 KNN                      ✅ 정확
       현재는 skill wiring 이 스킵된다. 별도 `LibsqlSkillStore` 필요
 - [ ] `reindexAll()` 경로 실측 (쓰기 33ms/행이라 대량 재임베딩은 느리다)
 - [ ] 동시 접근 / 무료 플랜 연결 수 제한
+
+---
+
+# 부록 — Skill 활성 상태 끝단 검증 (2026-08-21)
+
+`skill.enabled: true` 로 게이트웨이를 띄우고 **HTTP API 로** 확인했다.
+
+```
+[skill][config] initialized: storeBackend=libsql, contentBackend=local, routing.mode=bm25
+
+✅ POST /v3/skill/create   → skl-CLywpgSCTIun
+✅ POST /v3/skill/list     → total=1
+✅ POST /v3/skill/search   → 1건 (BM25)
+✅ POST /v3/skill/get      → 왕복
+✅ manifest 첨부 1건       → probe.sh
+```
+
+### 저장 위치 실측
+
+```
+Turso  skills          skl-CLywpgSCTIun | s3-compat-storage | v1 | is_head=1 | active | 292자
+Turso  skill_fts       1행
+S3     vskill3/skills/skl-CLywpgSCTIun/v1/files/probe.sh
+```
+
+**SKILL.md 본문은 DB 안(`skills.content`)에 있고, `files/` 첨부만 오브젝트 스토리지로 간다.**
+`SkillResourceStore` 가 주입된 `StorageAdapter` 를 그대로 쓰므로 S3 를 붙이면 자동으로 따라온다.
+로그의 `contentBackend=local` 은 COS 자격증명 유무 라벨일 뿐 실제 저장 위치와 무관하다.
+
+### 검증 중 만난 것 (전부 입력 규격 문제, 코드 결함 아님)
+
+| 증상 | 원인 |
+|---|---|
+| `SKILL_FRONTMATTER_INVALID: missing frontmatter` | SKILL.md 는 `---\n` 로 시작해야 한다 (`skill-format.ts:49`) |
+| `invalid name '...' — must match ^[a-z0-9][a-z0-9-]*$` | skill name 에 한글/대문자 불가 |
+| S3 키가 `.../files/files/probe.sh` | `resources[].path` 는 **`files/` 하위 상대경로**다. 접두사를 또 붙이면 중복된다 |
+
+⚠️ **HTTP 200 이어도 실패일 수 있다.** 이 API 는 envelope 의 `code` 로 실패를 싣는다
+(`status=200 envelope_code=42203`). 검증 스크립트는 `body.code === 0` 으로 판정해야 한다.
+
+### 앞선 `Skill wiring deferred` 로그에 대하여
+
+기동 초기에 `Skill wiring deferred: vectorStore not ready` 가 두 번 찍히지만,
+`setStorage()` 이후 `ensureSkillModuleWired()` 재시도가 실제로 성공한다
+(`gateway/server.ts:656`). 위 e2e 가 그 증거다 — 배선이 안 됐다면 create 가 아예 실패한다.
