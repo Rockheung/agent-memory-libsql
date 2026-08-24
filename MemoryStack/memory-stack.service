@@ -1,0 +1,27 @@
+# 재부팅 후에도 스택이 살아나게 한다.
+#
+# 설치:
+#   sudo cp memory-stack.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now memory-stack
+#
+# compose 자체의 restart:unless-stopped 는 도커 데몬이 뜬 뒤 컨테이너를 되살리지만,
+# `docker compose up` 을 한 번도 안 한 상태(신규 볼륨/렌더링 컨테이너)는 복구하지 않는다.
+# 이 유닛은 부팅마다 up 을 돌려 config 렌더링까지 다시 태운다.
+[Unit]
+Description=Memory Stack (core + proxy + edge)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/ubuntu/memory-fork/MemoryStack
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=600
+User=ubuntu
+Group=ubuntu
+
+[Install]
+WantedBy=multi-user.target

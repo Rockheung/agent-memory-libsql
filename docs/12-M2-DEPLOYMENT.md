@@ -134,8 +134,73 @@ L1 [episodic]: "사용자는 2026년 8월 24일에 oci-ko를 메모리 게이트
 
 **L0 → 벡터 → L1 추출 → 벡터 + FTS 까지 전 파이프라인이 관리형 인프라 위에서 동작한다.**
 
-## 남은 것
+---
 
-- [ ] NPM 에 `memory.h.rockheung.xyz` / `cliproxy-memd.h.rockheung.xyz` 프록시 호스트 등록
-- [ ] Mac 의 ClaudeCodeAdapter 를 oci-ko 게이트웨이로 전환 (현재 Mac colima 를 본다)
-- [ ] `docker compose` 를 systemd 로 올려 재부팅 생존
+# 상시화 마무리 (2026-08-25)
+
+## systemd
+
+```
+/etc/systemd/system/memory-stack.service   enabled + active
+```
+`restart: unless-stopped` 만으로는 **한 번도 `up` 하지 않은 상태**(새 볼륨, config
+렌더링 컨테이너)가 복구되지 않는다. 유닛이 부팅마다 `docker compose up -d` 를 돌려
+렌더링까지 다시 태운다.
+
+## 방화벽 — 공인망은 계속 닫는다
+
+oci-ko 는 공인 IP 가 있고 컨테이너는 `0.0.0.0` 에 바인딩된다. cliproxy(8317)가
+쓰던 것과 **동일한 정책**으로 홈랩 LAN + 오버레이망만 연다.
+
+```
+iptables -I INPUT 1 -p tcp -s 192.168.88.0/24 --dport 8090 -j ACCEPT   # edge
+iptables -I INPUT 1 -p tcp -s 10.77.0.0/24    --dport 8090 -j ACCEPT
+iptables -I INPUT 1 -p tcp -s 192.168.88.0/24 --dport 8420 -j ACCEPT   # core
+iptables -I INPUT 1 -p tcp -s 10.77.0.0/24    --dport 8420 -j ACCEPT
+netfilter-persistent save
+```
+
+공인망 차단은 OCI 보안목록이 이미 하고 있다 (`nc seoul.oracle...:8090` 불가 확인).
+**이중 방어이며, 어느 한쪽만 믿지 않는다.**
+
+## NPM 프록시 호스트
+
+| 도메인 | 대상 | 용도 |
+|---|---|---|
+| `cliproxy-memd.h.rockheung.xyz` | `10.77.0.4:8090` (edge) | 기억이 붙는 OpenAI 호환 엔드포인트 |
+| `memory.h.rockheung.xyz` | `10.77.0.4:8420` (core) | `/v3/*` 직접 호출 (훅 어댑터용) |
+
+기존 `cliproxy.h` 를 본떠 만들었다 — 같은 LE 와일드카드(cert id=3), SSE 를 위해
+`proxy_buffering off` + 600s 타임아웃.
+
+```
+https://cliproxy-memd.h.rockheung.xyz/v1/models   → 49개
+https://memory.h.rockheung.xyz/health             → 200
+```
+
+## ClaudeCodeAdapter 전환
+
+Mac 의 훅이 이제 oci-ko 를 본다.
+```
+endpoint: https://memory.h.rockheung.xyz
+team/agent/user: team-dao10rbbqc / agt-dao2se7qb5 / usr-dao0wjxnsr
+주입 2285자  (core/read 3.2s · atomic/search 0.6s · scenario/ls 0.07s)
+```
+기존 Mac colima 설정은 `~/.claude/memory-adapter.json.mac-backup` 에 보관.
+
+⚠️ 첫 호출이 3.2초로 느리다 — TLS 핸드셰이크 + 오버레이 왕복 + 커널 콜드스타트가
+겹친 값이다. 훅 예산이 15초라 여유는 있지만, 상시 체감이 나쁘면
+`recall_timeout_seconds` 를 조정하거나 L3 주입을 세션당 1회로 유지하는 현재 설계에
+의존하게 된다.
+
+## 클라이언트 접속 방법
+
+```
+BrowserOS / LibreChat / 임의 OpenAI 호환:
+  base URL:  https://cliproxy-memd.h.rockheung.xyz/v1
+  api key :  admin user_key (oci-ko:~/memory-fork/MemoryStack/.admin-key)
+  모델    :  기존 49개 그대로. 기억은 자동으로 붙는다.
+
+기억 없이 쓰려면:
+  base URL:  https://cliproxy.h.rockheung.xyz/v1     (기존 그대로)
+```

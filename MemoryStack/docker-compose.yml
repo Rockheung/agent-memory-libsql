@@ -55,8 +55,11 @@ services:
     network_mode: host
     environment:
       TDAI_GATEWAY_PORT: "8420"
-      # host 네트워크이므로 루프백에만 바인딩해 외부 노출을 막는다
-      TDAI_GATEWAY_HOST: "127.0.0.1"
+      # host 네트워크. 0.0.0.0 에 바인딩하되 방화벽으로 홈랩 LAN + 오버레이망만
+      # 허용한다 (cliproxy 8317 과 동일 정책). ClaudeCodeAdapter 같은 외부 클라이언트가
+      # /v3/* 를 직접 호출해야 하므로 루프백만으로는 부족하다.
+      # 데이터 평면은 TDAI_GATEWAY_API_KEY 로 보호된다.
+      TDAI_GATEWAY_HOST: "${CORE_BIND:-0.0.0.0}"
       # 비우면 데이터 평면이 "비어있지 않은 아무 Bearer" 나 통과시킨다.
       # 내부망 전용이라도 반드시 채울 것. (docs/06-M0-RESULT.md F3)
       TDAI_GATEWAY_API_KEY: "${GATEWAY_API_KEY:?GATEWAY_API_KEY 를 .env 에 설정하세요}"
