@@ -18,7 +18,7 @@ map $http_x_conversation_id $conv_id {
 }
 
 server {
-    listen 8080;
+    listen ${EDGE_PORT};
     server_name _;
     client_max_body_size 64m;
 
@@ -30,7 +30,7 @@ server {
 
     # 나머지 전부 memory-proxy 로. 경로 앞에 /{agent-source}/{spaceId} 를 붙인다.
     location / {
-        proxy_pass http://proxy:8096/${AGENT_SOURCE}/${SPACE_ID}$request_uri;
+        proxy_pass http://127.0.0.1:8096/${AGENT_SOURCE}/${SPACE_ID}$request_uri;
 
         # SSE 스트리밍 — 끄지 않으면 응답이 끝까지 뭉친다 (로컬 실측 확인)
         proxy_buffering off;

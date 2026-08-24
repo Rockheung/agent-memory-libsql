@@ -136,6 +136,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
     enabled: false,
     url: "",
     timeoutMs: 5000,
+    apiKey: "",
   },
   systemUsers: [],
   admin: { apiKey: "" },
@@ -467,6 +468,9 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
       enabled: yaml.auth?.enabled ?? DEFAULT_CONFIG.auth.enabled,
       url: yaml.auth?.url ?? DEFAULT_CONFIG.auth.url,
       timeoutMs: yaml.auth?.timeoutMs ?? DEFAULT_CONFIG.auth.timeoutMs,
+      // 커널이 TDAI_GATEWAY_API_KEY 를 켠 경우 필요하다. env 폴백을 둬서
+      // config 를 안 고쳐도 배포에서 주입할 수 있게 한다.
+      apiKey: yaml.auth?.apiKey ?? process.env.TDAI_GATEWAY_API_KEY ?? DEFAULT_CONFIG.auth.apiKey,
     },
     // Entries without a non-empty userId are silently dropped — matching is
     // by userId now, and an empty userId would otherwise collide with

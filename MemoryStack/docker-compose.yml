@@ -17,7 +17,14 @@ name: memory-stack
 
 services:
   core:
-    image: ${MEMORY_CORE_IMAGE:-agentmemory/memory-core:latest}
+    # 포크 코드가 필요하다. upstream 이미지를 베이스로 바뀐 소스 + 관리형 백엔드
+    # 의존성만 얹는다 (core/Dockerfile 주석 참조).
+    build:
+      context: ..                      # 레포 루트 — MemoryCore/src 에 접근해야 한다
+      dockerfile: MemoryStack/core/Dockerfile
+      args:
+        BASE: ${MEMORY_CORE_IMAGE:-agentmemory/memory-core:latest}
+    image: memory-core-libsql:local
     container_name: ms-core
     restart: unless-stopped
     environment:
@@ -27,6 +34,20 @@ services:
       # 내부망 전용이라도 반드시 채울 것. (docs/06-M0-RESULT.md F3)
       TDAI_GATEWAY_API_KEY: "${GATEWAY_API_KEY:?GATEWAY_API_KEY 를 .env 에 설정하세요}"
       TDAI_DATA_DIR: /data/tdai-memory
+
+      # ── 메타데이터 → Turso ──
+      TDAI_METADATA_LIBSQL_URL: "${TURSO_URL:?TURSO_URL 을 .env 에 설정하세요}"
+      TDAI_METADATA_LIBSQL_AUTH_TOKEN: "${TURSO_AUTH_TOKEN:?}"
+      # ── L0/L1 + 벡터 + Skill → Turso ──
+      TDAI_STORE_LIBSQL_URL: "${TURSO_URL:?}"
+      TDAI_STORE_LIBSQL_AUTH_TOKEN: "${TURSO_AUTH_TOKEN:?}"
+      # ── L2/L3 마크다운 · JSONL · checkpoint · 생성이력 → S3 호환 ──
+      TDAI_STORAGE_S3_ENDPOINT: "${S3_ENDPOINT:?}"
+      TDAI_STORAGE_S3_REGION: "${S3_REGION:-ap-seoul-1}"
+      TDAI_STORAGE_S3_BUCKET: "${S3_BUCKET:?}"
+      TDAI_STORAGE_S3_ACCESS_KEY_ID: "${S3_ACCESS_KEY_ID:?}"
+      TDAI_STORAGE_S3_SECRET_ACCESS_KEY: "${S3_SECRET_ACCESS_KEY:?}"
+      TDAI_STORAGE_S3_PREFIX: "${S3_PREFIX:-prod/}"
     volumes:
       # core-data 볼륨이 없다. 상태가 전부 Turso + Object Storage 에 있어
       # 컨테이너는 무상태다. 로컬에 남는 건 .metadata/manifest.json 뿐이고
@@ -34,9 +55,9 @@ services:
       - ./core/tdai-gateway.yaml:/data/config/tdai-gateway.yaml:ro
     networks: [ms]
     # 외부 비노출. 디버깅 때만 아래 주석 해제.
-    # ports: ["8420:8420"]
+    ports: ["127.0.0.1:8420:8420"]   # proxy/edge 가 host 네트워크라 루프백으로 접근한다
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8420/ || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8420/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -54,14 +75,28 @@ services:
     volumes:
       - ./proxy:/src:ro
       - proxy-conf:/out
-    command: >-
-      sh -c 'envsubst "$$PROXY_UPSTREAM_URL $$PROXY_UPSTREAM_API_KEY $$GATEWAY_API_KEY"
-             < /src/config.yaml.template > /out/config.yaml && echo rendered'
+    command:
+      # envsubst 의 SHELL-FORMAT 인자는 "치환할 변수 이름 목록" 이다. 값을 넘기면
+      # 빈 목록이 되어 결과가 0 바이트가 된다. 목록을 문자열로 정확히 준다.
+      - sh
+      - -c
+      - >-
+        envsubst '$$PROXY_UPSTREAM_URL $$PROXY_UPSTREAM_API_KEY $$GATEWAY_API_KEY'
+        < /src/config.yaml.template > /out/config.yaml
+        && test -s /out/config.yaml
+        && echo "rendered $$(wc -c < /out/config.yaml) bytes"
     networks: [ms]
 
   proxy:
-    image: ${MEMORY_PROXY_IMAGE:-agentmemory/memory-proxy:latest}
+    # 포크 빌드가 필요하다 — auth Bearer 수정 (proxy/Dockerfile 주석 참조)
+    build:
+      context: ..
+      dockerfile: MemoryStack/proxy/Dockerfile
+      args:
+        BASE: ${MEMORY_PROXY_IMAGE:-agentmemory/memory-proxy:latest}
+    image: memory-proxy-auth:local
     container_name: ms-proxy
+    network_mode: host          # 상위 LLM(cliproxy)이 wg0 전용 바인딩이라 필요하다
     restart: unless-stopped
     depends_on:
       core: {condition: service_healthy}
@@ -70,9 +105,9 @@ services:
       - proxy-conf:/app/conf:ro
       - proxy-data:/app/data
     command: ["node", "--import", "tsx/esm", "src/index.ts", "--config", "/app/conf/config.yaml"]
-    networks: [ms]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:8096/ || exit 1"]
+      # 프록시는 인증이 걸린 라우트뿐이라 응답 코드가 아니라 "응답을 하는지" 로 본다
+      test: ["CMD-SHELL", "curl -sS -o /dev/null --max-time 3 http://127.0.0.1:8096/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -81,20 +116,26 @@ services:
   edge:
     image: nginx:1.27-alpine      # 순정. njs 불필요 (호스트네임이 스위치)
     container_name: ms-edge
+    # cliproxy 가 WireGuard 인터페이스(10.77.0.4)에만 바인딩돼 있어 도커 브리지에서
+    # 닿지 않는다. 엣지만 호스트 네트워크에 붙여 오버레이망으로 나갈 수 있게 한다.
+    # (proxy 도 cliproxy 를 부르므로 아래에서 같은 처리를 한다.)
+    network_mode: host
     restart: unless-stopped
     depends_on: [proxy]
-    ports: ["${EDGE_PORT:-8090}:8080"]
     environment:
-      TEAM_ID: "${TEAM_ID:?TEAM_ID 를 .env 에 설정하세요 (bootstrap.sh 가 출력)}"
-      AGENT_ID: "${AGENT_ID:?AGENT_ID 를 .env 에 설정하세요}"
+      TEAM_ID: "${TEAM_ID:-}"
+      AGENT_ID: "${AGENT_ID:-}"
       TASK_ID: ${TASK_ID:-}
       AGENT_SOURCE: ${AGENT_SOURCE:-codebuddy}
       SPACE_ID: ${SPACE_ID:-default}
       # /v1 을 붙이지 않은 베이스. 엣지가 $request_uri 를 그대로 이어붙인다.
       UPSTREAM_BASE: "${UPSTREAM_BASE:?UPSTREAM_BASE 를 .env 에 설정하세요}"
+      EDGE_PORT: "${EDGE_PORT:-8090}"
     volumes:
       - ./edge/default.conf.template:/etc/nginx/templates/default.conf.template:ro
-    networks: [ms]
+    # compose 는 up 대상이 아닌 서비스의 변수까지 보간한다. bootstrap.sh 가 ID 를
+    # 채우기 전에 core 만 띄울 수 있어야 하므로, 필수 검사를 여기서 한다.
+    entrypoint: ["sh","-c","test -n \"$$TEAM_ID\" -a -n \"$$AGENT_ID\" || { echo 'TEAM_ID/AGENT_ID 가 비어있다 — ./bootstrap.sh 를 먼저 실행하세요'; exit 1; }; exec /docker-entrypoint.sh nginx -g 'daemon off;'"]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
       interval: 10s
