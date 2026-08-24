@@ -78,6 +78,9 @@ export async function verifyUserKey(userKey: string, serviceId: string): Promise
       headers: {
         "content-type": "application/json",
         "x-tdai-service-id": serviceId,
+        // 커널이 API key 를 켠 경우 Bearer 가 없으면 401 이 난다.
+        // 비어 있으면 헤더를 생략해 기존 동작을 유지한다.
+        ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}),
       },
       body: JSON.stringify({ user_key: userKey }),
     };

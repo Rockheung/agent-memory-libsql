@@ -10,8 +10,8 @@ data:
   baseDir: /data/tdai-memory
 
 llm:
-  baseUrl: "http://10.77.0.4:8317/v1"
-  apiKey: "REPLACE_ME"          # cliproxy api-key
+  baseUrl: "${PROXY_UPSTREAM_URL}"
+  apiKey: "${PROXY_UPSTREAM_API_KEY}"   # cliproxy api-key (.env 에서 주입)
   model: "gpt-5.6-sol-low"      # A/B 결과 (docs/06-M0-RESULT.md F11)
   maxTokens: 32000
   timeoutMs: 300000
@@ -45,7 +45,7 @@ memory:
   embedding:
     enabled: true
     provider: openai
-    baseUrl: "http://192.168.88.223:11434/v1"   # dgx ollama
+    baseUrl: "${EMBED_BASE_URL}"   # dgx ollama
     apiKey: "ollama"
     model: "bge-m3"
     dimensions: 1024

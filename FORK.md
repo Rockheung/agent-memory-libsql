@@ -74,7 +74,23 @@ upstream 은 **스쿼시된 릴리스 드롭**으로 코드를 떨군다 (`feat:
    신규 파일은 제한하지 않는다 — 충돌하지 않으므로 rebase 비용이 0 이다.
    현재 6,000 줄 이상이 add-only 다.
 
-3. **`sdk/` 와 `MemoryProxy/` 는 건드리지 않는다.** upstream 그대로 쓴다.
+3. **`sdk/` 는 건드리지 않는다.** upstream 그대로 쓴다.
+
+   ~~`MemoryProxy/` 도 건드리지 않는다~~ — 2026-08-25 에 깼다. 이유:
+   `verifyUserKey` 가 커널을 부를 때 `Authorization` 헤더를 보내지 않아,
+   커널에 `TDAI_GATEWAY_API_KEY` 를 켜면 **모든 인증이 401 로 실패한다**
+   (`MemoryProxy/src/auth.ts`). 우회가 "게이트웨이 인증을 끄는 것" 뿐이라
+   보안을 포기하지 않으려면 고칠 수밖에 없었다.
+
+   수정 3곳 (전부 후크 성격):
+   | 파일 | 내용 |
+   |---|---|
+   | `src/types.ts` | `AuthConfig.apiKey` 필드 |
+   | `src/auth.ts` | 있을 때만 `Authorization: Bearer` 부착 |
+   | `src/config.ts` | 기본값 + `TDAI_GATEWAY_API_KEY` env 폴백 |
+
+   **하위 호환된다** — `apiKey` 가 비면 헤더를 안 붙여 기존 배포와 동일하다.
+   그래서 upstream PR 후보이기도 하다 (docs/ROADMAP.md U 트랙).
 4. 6곳을 넘겨야 할 일이 생기면 **먼저 upstream 에 seam Issue 를 던진다** (docs/ROADMAP.md U1 참조).
 
 ## 라이선스

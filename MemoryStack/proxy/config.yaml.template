@@ -13,7 +13,7 @@ upstream:
 # ── 메모리 커널 ──
 tdai:
   enabled: true
-  endpoint: "http://core:8420"
+  endpoint: "http://127.0.0.1:8420"
   apiKey: "${GATEWAY_API_KEY}"
   serviceId: "default"
   memory:
@@ -27,13 +27,16 @@ tdai:
     timeoutMs: 8000        # oci-ko → dgx 임베딩 경유를 감안해 기본 5s 보다 여유
 
 skill:
-  endpoint: "http://core:8420"
+  endpoint: "http://127.0.0.1:8420"
   serviceToken: "${GATEWAY_API_KEY}"
 
 auth:
   enabled: true
-  url: "http://core:8420"
+  url: "http://127.0.0.1:8420"
   timeoutMs: 5000
+  # 커널이 TDAI_GATEWAY_API_KEY 를 켰으므로 Bearer 가 필요하다.
+  # upstream 은 이 필드가 없어 401 이 난다 (포크에서 추가).
+  apiKey: "${GATEWAY_API_KEY}"
 
 # ── 상태 저장: Redis 없이 sqlite 단일 인스턴스 ──
 storage:

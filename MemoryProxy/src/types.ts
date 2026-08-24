@@ -606,6 +606,16 @@ export interface AuthConfig {
   url: string;
   /** Request timeout in ms. Default: 5000. */
   timeoutMs: number;
+  /**
+   * 커널 게이트웨이의 `TDAI_GATEWAY_API_KEY`.
+   *
+   * 커널은 `/health` 를 뺀 모든 라우트에 `Authorization: Bearer <key>` 를 요구한다
+   * (gateway/server.ts). 이 값이 없으면 커널에 API key 가 설정된 순간
+   * `/v3/meta/auth/verify` 가 401 을 내고 **모든 요청이 인증에 실패한다.**
+   *
+   * 비워두면 헤더를 붙이지 않는다 — 커널도 key 를 안 켠 기존 배포와 동일하게 동작한다.
+   */
+  apiKey?: string;
 }
 
 /**
@@ -830,6 +840,7 @@ export interface RawYamlConfig {
     enabled?: boolean;
     url?: string;
     timeoutMs?: number;
+    apiKey?: string;
   };
   systemUsers?: Partial<SystemUserEntry>[];
   admin?: {
