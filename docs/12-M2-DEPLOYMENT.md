@@ -94,9 +94,48 @@ L0: "홈랩 게이트웨이는 **oci-ko**에 있고..."
 L0: "기억 테스트다. 내 홈랩 게이트웨이는 oci-ko 에..."
 ```
 
+### 7. core 도 host 네트워크여야 한다 ★
+
+edge/proxy 만 host 로 바꿨더니 **L1 추출이 조용히 0건**이 됐다.
+core 가 L1/L2/L3 추출을 위해 cliproxy 를 **직접** 부르기 때문이다.
+
+```
+[standalone-runner] run() failed: Cannot connect to API: connect EHOSTUNREACH 10.77.0.4:8317
+[l1] L1 complete: extracted=0, stored=0
+```
+
+**채팅 응답은 정상 200 이라 겉으로는 멀쩡해 보인다.** 로그를 안 보면 못 잡는다.
+core 도 `network_mode: host` 로 바꾸고, 대신 `TDAI_GATEWAY_HOST=127.0.0.1` 로
+루프백에만 바인딩해 외부 노출을 막았다.
+
+### 8. core config 도 렌더링이 필요하다
+
+`tdai-gateway.yaml` 의 LLM `apiKey` 가 `REPLACE_ME` 인 채로 배포돼
+추출이 `Unauthorized` 로 실패했다. proxy 와 같은 방식으로 `core-config`
+렌더링 서비스를 두고 `.env` 값을 주입한다. 이것도 **채팅은 정상**이라 안 보인다.
+
+> 두 건 모두 "응답은 200 인데 기억이 안 쌓인다" 형태다. **배포 검증은 응답이 아니라
+> 저장소를 봐야 한다.** 이 문서 전체를 관통하는 교훈이다.
+
+---
+
+## 최종 검증
+
+```
+채팅 http=200
+응답: 기억하겠습니다. - 상시 호스트: oci-ko - 상태 저장소: Turso + Oracle Object Storage
+
+L1 complete: extracted=1, stored=1   (LLM 7.1초)
+
+Turso: l0 6 | l0vec 6 | l1 1 | l1vec 1 | l1fts 1
+L1 [episodic]: "사용자는 2026년 8월 24일에 oci-ko를 메모리 게이트웨이의 상시 호스트로
+                정하고, 상태 데이터를 Turso와 Oracle Object Storage에 저장하기로 결정했다."
+```
+
+**L0 → 벡터 → L1 추출 → 벡터 + FTS 까지 전 파이프라인이 관리형 인프라 위에서 동작한다.**
+
 ## 남은 것
 
 - [ ] NPM 에 `memory.h.rockheung.xyz` / `cliproxy-memd.h.rockheung.xyz` 프록시 호스트 등록
 - [ ] Mac 의 ClaudeCodeAdapter 를 oci-ko 게이트웨이로 전환 (현재 Mac colima 를 본다)
-- [ ] L1 추출이 실제로 도는지 확인 (검증 시점엔 대기 중이었다)
 - [ ] `docker compose` 를 systemd 로 올려 재부팅 생존
