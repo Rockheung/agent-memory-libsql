@@ -37,13 +37,21 @@ AGENT=$(api /v3/meta/agent/create "$UKEY" "{\"team_id\":\"$TID\",\"name\":\"${AG
 AID=$(echo "$AGENT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("agent_id",""))')
 echo "   agent_id=$AID"
 
-echo "4) .env 갱신"
-python3 - "$TID" "$AID" <<'PY'
+echo "4) task 생성"
+# 세션 초기화 폼을 건너뛰려면 x-task-id 까지 있어야 한다 (headerAutoSelect 는
+# team/agent/task 를 모두 본다). 실제 태스크 관리를 안 할 거라도 기본 태스크가 하나 필요하다.
+TASK=$(api /v3/meta/task/create "$UKEY" "{\"team_id\":\"$TID\",\"creator_user_id\":\"$UID_\",\"title\":\"${TASK_TITLE:-default}\"}")
+TSKID=$(echo "$TASK" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("task_id",""))')
+echo "   task_id=$TSKID"
+
+echo "5) .env 갱신"
+python3 - "$TID" "$AID" "$TSKID" <<'PY'
 import re, sys
-tid, aid = sys.argv[1], sys.argv[2]
+tid, aid, tsk = sys.argv[1], sys.argv[2], sys.argv[3]
 s = open(".env", encoding="utf-8").read()
 s = re.sub(r'^TEAM_ID=.*$',  f'TEAM_ID={tid}',  s, flags=re.M)
 s = re.sub(r'^AGENT_ID=.*$', f'AGENT_ID={aid}', s, flags=re.M)
+s = re.sub(r'^TASK_ID=.*$',  f'TASK_ID={tsk}',  s, flags=re.M)
 open(".env","w",encoding="utf-8").write(s)
 PY
 echo
