@@ -145,10 +145,18 @@ upstream 은 최근 20 커밋 중 **실제 코드 드롭이 3 번**이고 전부
 
 ```bash
 cd MemoryCore
-npx vitest run src/metadata/store/          # 계약 96 (sqlite 48 + libsql 48)
-npx tsx scripts/e2e-libsql.ts               # 메모리 스토어 7
-npx tsx scripts/e2e-s3.ts                   # S3 백엔드 16
+npx vitest run src/metadata/store/                    # 계약 96 (sqlite 48 + libsql 48). 격리됨
+npx tsx src/core/store/__libsql-store.e2e.ts          # 메모리 스토어 7
+npx tsx src/core/skill/__libsql-skill-store.e2e.ts    # 스킬 스토어 10
+npx tsx src/core/skill/__skill-gateway.e2e.ts         # 스킬 HTTP 5
+node   src/core/storage/__s3-backend.itest.mjs        # S3 백엔드 16
 ```
+
+`__` 접두사라 vitest include 에 안 걸린다 — 위처럼 직접 실행해야 한다.
+계약 테스트만 `:memory:` 라 안전하고, **나머지 4개는 자격증명 파일
+(`~/.config/turso.env`, `~/.config/oci-s3.env`)을 읽어 실제 운영 Turso/S3 를
+친다.** 삭제는 하지 않지만 테스트 레코드가 남는다. 운영 데이터가 신경 쓰이면
+Turso 브랜치를 하나 파서 URL 만 바꿔 돌릴 것.
 
 하나라도 깨지면 그 드롭은 **이식이 깨진 것**이지 충돌 해소 실패가 아니다.
 docs/09·11 의 함정(트랜잭션 핸들, WHERE 없는 DELETE)을 다시 읽을 것.
