@@ -10,7 +10,7 @@
 1. upstream 을 **설정만으로** 중앙화해서 쓸 수 있는지 검증 (M0)
 2. 되지 않는 부분에 한해 **libSQL/Turso 백엔드**를 추가 (M1~)
 
-분석 근거와 판정은 [`docs/`](docs/README.md) 6편에 있다.
+분석 근거와 판정은 [`docs/`](docs/README.md) 13편에 있다.
 작업 계획은 [`docs/ROADMAP.md`](docs/ROADMAP.md).
 (루트 `ROADMAP.md` 는 upstream 것이므로 건드리지 않는다.)
 

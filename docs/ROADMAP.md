@@ -1,263 +1,106 @@
 # ROADMAP
 
-근거: [`./`](README.md) 6편. 판정 요약은 [`README.md`](README.md).
+**M0–M7 전부 완료 (2026-08-25).** 이 문서는 이제 계획서가 아니라 **현황과 남은 운영
+항목**이다. 설계 근거는 [`README.md`](README.md) 의 분석 13편에, 포크 규약과 리베이스
+절차는 [`../FORK.md`](../FORK.md) 에 있다.
 
-원칙 하나: **각 마일스톤은 독립적으로 가치가 있고, 어디서 멈춰도 시스템이 돈다.**
-M0 에서 멈추면 목표(멀티머신 기억 공유)는 이미 100% 달성이다. M1 이후는 백업 자동화다.
-
----
-
-## M0 — Gateway 중앙화 검증 · **코드 0줄** ✅ 완료 (2026-08-19)
-
-> 결과: [`06-M0-RESULT.md`](06-M0-RESULT.md). **C0–C7 전부 통과.**
-> 세션 3개가 프로필 1개로 병합되는 것까지 확인 → 원래 목표는 여기서 달성됐다.
-> 아래 절차는 재현/이관 시 그대로 쓴다.
-
-> 이걸 먼저 하는 이유: 성공하면 M1 이후의 **범위가 줄어든다.**
-> Turso 가 풀려던 문제의 대부분이 여기서 사라지고 "백업 자동화"만 남는다.
-
-### 목표
-
-한 대에 memory-core 를 띄우고, 두 대 이상의 클라이언트가 **같은 기억**을 보는지 확인.
-
-### 절차
-
-```bash
-cd deploy/global-images
-cp .env.example .env && $EDITOR .env      # MEMORY_LLM_* 만 채우면 M0 는 충분
-./verify.sh --skip-llm                    # 드라이런: docker/포트/필수값 점검
-./start-memory-core.sh                    # memory-core 단독 기동 (:8420)
-```
-
-> `start-all.sh` 는 `PROXY_UPSTREAM_*` 까지 전부 요구한다.
-> M0 에서는 memory-core 만 있으면 되므로 `start-memory-core.sh` 를 직접 부른다.
-
-### 체크리스트
-
-- [ ] **C0** `verify.sh --skip-llm` 통과
-- [ ] **C1** `GET :8420/v3/meta/auth/verify` 응답. `.admin-key` 파일 생성 확인
-- [ ] **C2** `POST /v3/conversation/add` → `POST /v3/atomic/search` 로 되돌아오는가
-- [ ] **C3** Mac OpenClaw 를 `mode: "remote"` 로 붙인다 (아래 설정)
-- [ ] **C4** **두 번째 머신**(Pi/GPU)에서 같은 설정으로 붙여 C2 의 결과가 보이는가
-- [ ] **C5** `embedding.provider` 를 실제 값으로 켜고 벡터 검색이 도는가
-      (기본값 `"none"` → BM25/FTS5 만 돈다. `03-CENTRALIZATION.md` §주의점)
-- [ ] **C6** L2/L3 가 생성되는가 — `docker exec` 로 `persona.md` / `scene_blocks/*.md` 확인
-- [ ] **C7** 두 머신의 L2/L3 가 **하나로 합쳐지는가** (`agentId` 를 같게 줬을 때)
-
-### 클라이언트 설정 (모든 머신 동일)
-
-```jsonc
-{
-  "mode": "remote",
-  "server": {
-    "url": "http://<gateway-host>:8420",
-    "apiKey": "<MEMORY_CORE_GATEWAY_API_KEY 또는 local>",
-    "instanceId": "default",
-    "teamId": "rock",
-    "agentId": "rock-agent",   // ⚠️ 머신별로 다르게 주면 L2/L3 페르소나가 쪼개진다
-    "userId": "rock"
-  },
-  "recall": { "maxResults": 5, "includePersona": true }
-}
-```
-
-> `agentId` 함정 근거: `MemoryCore/src/core/profile/profile-sync.ts:20` —
-> L2/L3 정체성은 `(teamId, agentId)` 쌍이고 userId/sessionId/taskId 를 의도적으로 무시한다.
-> 상세: `04-MARKDOWN-PLACEMENT.md` §4
-
-### 배포 시 확인할 것
-
-- [ ] `MEMORY_CORE_GATEWAY_API_KEY` — 기동 스크립트 기본값이 **빈 문자열**이다
-      (`deploy/global-images/start-memory-core.sh:24-33`).
-      LAN 밖으로 낼 거면 NPM 앞단에서 반드시 인증을 건다.
-- [ ] `tdai-memory-core-data` 볼륨 스냅샷 백업 잡 (M0 단계의 백업 = 이것 하나)
-- [ ] ARM64 이미지 확인 — oci-ko / Pi 에 올릴 경우
-
-### 산출물
-
-`06-M0-RESULT.md` — 무엇이 됐고 무엇이 안 됐는지. **이걸로 M1 범위를 재조정한다.**
+원칙 하나는 그대로 지켰다: **각 마일스톤은 독립적으로 가치가 있고, 어디서 멈춰도
+시스템이 돈다.** 실제로 M0 에서 원래 목표(멀티머신 기억 공유)가 달성됐고, M3 이후는
+전부 "DB 를 직접 운영하지 않는다"는 별개 목표를 위한 것이었다.
 
 ---
 
-## M1 — 실사용 연결 ✅ 완료 (2026-08-19) — **프록시 대신 훅 어댑터**
-
-> 결론이 바뀌었다. 아래 프록시 경로 대신 **`ClaudeCodeAdapter/`** 를 만들어 해결했다.
-> 프록시는 `ANTHROPIC_BASE_URL` 을 가로채 LLM 을 upstream 으로 넘기는데,
-> 훅 어댑터는 **LLM 경로를 건드리지 않아 기존 구독이 유지된다.**
->
-> ```
-> UserPromptSubmit → /v3/core/read · /v3/atomic/search · /v3/scenario/ls → additionalContext
-> Stop             → /v3/conversation/add
-> ```
->
-> 실전 검증: 훅 발동 ✅ / 주입(L3·L2 세션당 1회 + L1 매 턴) ✅ / L0 기록 ✅ /
-> **추출→재회상 왕복 ✅** / fail-open 0.09s ✅ / `claude -p` 헤드리스에서도 발동 ✅
->
-> 남은 정리 항목:
-> - [ ] `-p` 세션마다 새 session_id → L3 페르소나 매번 재주입. `MEMORY_ADAPTER_LEAN=1` 로 회피 가능하나 기본값 검토 필요
-> - [ ] `~/.claude/memory-adapter/*.json` state 파일 TTL 청소 (7일)
-> - [ ] 9409 등 테스트 데이터 정리 여부 결정
-
-<details><summary>원래 계획(MemoryProxy 경유) — 참고용</summary>
-
-> M0 는 HTTP 로만 검증했다. **실제 코딩 에이전트가 붙는 경로는 아직 미검증이다.**
-> 그리고 Claude Code 는 OpenClaw 플러그인이 아니라 **MemoryProxy 경유**다
-> (`INSTALL.md:262-270`).
+## 현재 운영 구성
 
 ```
-Claude Code ──► memory-proxy :8096 ──► 상위 LLM (cliproxy)
-                     │
-                     └─ HTTP ─► memory-core :8420  (L0~L3, Skill, Meta)
+클라이언트 ──► edge :8090 ──► memory-proxy ──► cliproxy (10.77.0.4:8317)
+   (헤더 주입)        └─────► memory-core :8420
+Claude Code ──► 훅 어댑터 ─────────────────────► memory-core :8420
+                                                   │
+                                    L0/L1/메타/스킬 ├─► Turso (libSQL 네이티브 벡터)
+                                    L2/L3 마크다운  └─► Oracle Object Storage
 ```
-
-```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8096/claude-code/default
-export ANTHROPIC_AUTH_TOKEN=$(cat deploy/global-images/.admin-key)
-```
-
-### ⚠️ 결정이 필요한 지점
-
-프록시를 타면 **LLM 이 cliproxy 로 넘어간다** — Claude Code 자체 구독 인증을 안 쓰게 된다.
-이미 cliproxy 에 `claude-opus-4-6-thinking` / `claude-sonnet-4-6` 이 있으므로 정합은 맞지만,
-"어느 계정/한도로 쓰는가"가 바뀐다. 진행 전에 확정할 것.
-
-- [ ] `PROXY_UPSTREAM_*` 채우고 `./start-proxy.sh`
-- [ ] Claude Code 를 프록시로 붙여 session init(Team → Agent → Task) 통과
-- [ ] 대화 후 `/v3/atomic/query` 에 L1 이 쌓이는지 확인
-- [ ] L2/L3 가 `profiles/team:...|agent:.../` 에 누적되는지 확인
-- [ ] 두 번째 머신에서 같은 team/agent 로 붙여 기억 공유 확인 (**진짜 C7**)
-
-</details>
-
----
-
-## M2 — 상시화: oci-ko 이관 · **코드 0줄**
-
-- [ ] `MEMORY_CORE_GATEWAY_API_KEY` 설정 ← **필수.**
-      비워두면 데이터 평면이 아무 Bearer 나 통과시킨다 (`06-M0-RESULT.md` F3)
-- [ ] arm64 이미지 확인됨 → oci-ko 에 그대로 기동
-- [ ] 임베딩 경로: oci-ko(10.77.0.4) → dgx ollama(192.168.88.223:11434) 도달 확인 필요
-- [ ] NPM 에 `memory.h.rockheung.xyz` 프록시 호스트 추가 (LE 와일드카드 재사용)
-- [ ] `tdai-memory-core-data` 볼륨 스냅샷 백업 잡
-- [ ] Mac 로컬 볼륨의 데이터를 옮길지 버릴지 결정 (M0 검증 데이터라 버려도 무방)
-
----
-
-## M3 — 계약 테스트 하네스 복원 · libSQL 선행조건
-
-> ⬇️ **M0 통과로 우선순위가 내려갔다.** libSQL 백엔드의 목적이
-> "멀티머신 공유"에서 "백업 자동화"로 축소됐기 때문.
-
-> upstream OSS 릴리스에는 `*.test.ts` 가 **0개**다.
-> `metadata-store.contract.ts` (854 LOC) 본체는 남아있고 **호출부만 제거**됐다.
-> 백엔드를 새로 쓰기 전에 이걸 먼저 세운다. 안 그러면 검증 수단이 없다.
-
-- [ ] `MemoryCore/src/metadata/store/sqlite-adapter.test.ts` 작성
-      → `runMetadataStoreContract("sqlite", ...)` 호출, **기존 SQLite 백엔드로 green** 만들기
-- [ ] `vitest.oss.config.ts` 가 없어서 `npm run test:oss` 가 깨진다 → 추가하거나 스크립트 정리
-- [ ] `IMemoryStore` 는 계약 테스트가 **없다.** `sqlite.ts` 동작을 기준으로 최소 스위트 작성
-      (L0/L1 upsert→search→delete, isolation 필터, FTS, 페이지네이션)
-
-**여기서 SQLite 가 green 이 안 되면 그 자체가 발견이다.** 진행 전에 원인을 적는다.
-
----
-
-## M4 — `LibsqlMetadataStore`
-
-> 여기부터 시작하는 이유: 계약 테스트가 **이미 존재**하고, SQL 실행이
-> `get / all / run / tx` **4개 헬퍼**로 수렴한다 (`sqlite-adapter.ts:408-435`).
-> 즉 가장 싸고 가장 검증 가능한 조각이다.
-
-- [ ] `metadata/store/libsql-adapter.ts` 신규 — `@libsql/client` 비동기
-- [ ] `MetadataBackend` 에 `"libsql"` (`interface.ts:201` — `"mysql"` 슬롯이 이미 예약돼 있다)
-- [ ] `metadata/store/factory.ts` 에 `case` 추가. **mongodb 처럼 `await import()`** 로 동적 로드
-- [ ] `runMetadataStoreContract("libsql", ...)` 통과
-- [ ] ⚠️ **함정**: `sqlite-adapter.ts:76` 이 UNIQUE 위반을 **에러 메시지 정규식**으로 판정한다.
-      ```
-      /UNIQUE constraint failed: meta_\w+\.(user_id|team_id|...)/
-      ```
-      드라이버가 바뀌면 조용히 깨진다. 계약 테스트가 잡아야 한다.
-- [ ] 부분 유니크 인덱스(`WHERE user_type = 'system_admin'`) / `PRAGMA foreign_keys` 동작 확인
-
----
-
-## M5 — `LibsqlMemoryStore`
-
-> 규모 2,000–3,000 LOC. `tcvdb.ts` (2,503 LOC) 가 참고 구현이다.
-
-- [ ] **선결**: Turso 인스턴스에서 `sqlite-vec` 가용 여부·버전 **실측**.
-      안 되면 네이티브 `F32_BLOB` 확정 — **이쪽이 더 낫다.**
-- [ ] `core/store/libsql.ts` 신규 — 전 메서드 `async` (인터페이스가 `MaybePromise` 라 합법)
-- [ ] 스키마: `l1_records` / `l0_conversations` 에 `embedding F32_BLOB(N)` 컬럼 +
-      `CREATE INDEX ... libsql_vector_idx(embedding)`
-- [ ] **`searchL1Vector` / `searchL0Vector` 를 JOIN 1회로 재작성.**
-      현재 구현은 후보 1건당 `stmtGetMeta.get()` 1회 (`sqlite.ts:1513`) — 원격에선 못 쓴다.
-      동시에 격리 필터를 SQL 로 내린다 (현재는 5배 over-fetch 후 JS 필터).
-- [ ] FTS5 (`l1_fts` / `l0_fts`) — libSQL 도 SQLite 기반이라 그대로 간다. 확인만.
-- [ ] 백엔드 스위치: `config.ts:183`, `config.ts:480`, `core/store/factory.ts`, `store-pool.ts`
-- [ ] Skill 은 **후순위**. `getRawDb()` 가 없으면 `tdai-core.ts:867` 이 경고 후 자동 스킵한다.
-
----
-
-## M6 — L2/L3 마크다운을 DB 로 (`pullProfiles` / `syncProfiles`)
-
-> SQLite 스토어는 이 5개 optional 메서드를 **구현하지 않는다.** TCVDB 는 한다.
-> M5 를 하면 같이 구현하는 게 맞다 — 그러면 오브젝트 스토리지가 **아예 필요 없어진다.**
-> 근거: `04-MARKDOWN-PLACEMENT.md` §안 C
-
-- [ ] `profiles` 테이블 (id / type / filename / content / content_md5 / team_id / agent_id / version)
-- [ ] `syncProfiles` 에 `baselineVersion` 낙관적 락 (`UPDATE ... WHERE version = ?`)
-- [ ] `pullProfiles` / `queryProfilesByIds` / `countProfiles` / `deleteProfiles`
-- [ ] 트레이드오프 확인: 로컬 마크다운은 캐시가 되고 다음 pull 이 덮어쓴다.
-      직접 편집/git 관리를 원하면 M4 를 건너뛰고 M0 의 로컬 FS 유지가 낫다.
-
----
-
-## M7 — (선택) Skill store
-
-- [ ] `core/skill/libsql-skill-store.ts` — `tcvdb-skill-store.ts` 가 참고 구현
-- [ ] `ISkillStore` 를 만족시키고 `store-pool.getSkillStore()` 에 연결
-
----
-
-## 업스트림 트랙 (U) — 언제든 병렬, 서로 블로킹 아님
-
-> upstream 실측: open **483** / closed-unmerged **230** / merged **56** (머지율 7.3%).
-> **머지되는 것에서 가치를 얻지 말고, 던지는 행위 자체가 공짜인 것만 던진다.**
-> 근거: `05-UPSTREAM-OR-FORK.md`
-
-- [ ] **U1 (Issue, 최우선)** — "storeBackend 를 닫힌 유니온 대신 등록 가능한 레지스트리로
-      열어줄 수 있나?" 머지되면 M2/M3 포크가 **플러그인**이 된다. 안 되면 10분 손해.
-      근거로 붙일 것: `IMemoryStore` 는 이미 `MaybePromise` 계약 + TCVDB 원격 선례,
-      `IStorageBackend` 쪽에도 같은 수요가 이미 있다 (upstream PR #1011 GitStorageBackend).
-- [ ] **U2 (docs PR)** — L2/L3 정체성이 `(teamId, agentId)` 라는 사실이 `INSTALL.md` 에 없다.
-      멀티머신으로 붙이는 사람은 100% 밟는다. `pr/docs-l2l3-identity` 브랜치.
-- [ ] **U3 (docs PR)** — `npm test` 가 0개 파일에 돌고 `vitest.oss.config.ts` 가 없는데
-      `CONTRIBUTING.md` 는 "run the relevant tests" 라고 한다.
-      ※ 스테일 브랜치명 건은 이미 upstream #1053~1055 가 올려둠 — 중복 금지, 확인 후 진행.
-
-**U 브랜치는 반드시 `feat/server_team` 에서 분기한다.** `rock/main` 커밋이 섞이면 안 된다.
-
----
-
-## 현재 상태
 
 | | |
 |---|---|
-| 포크 | `Rockheung/agent-memory-libsql` ← `TencentCloud/TencentDB-Agent-Memory` |
-| 브랜치 | `rock/main` (작업), `feat/server_team` (upstream 미러) |
-| 완료 | 코드레벨 분석 6편 + **M0 검증 통과(C0–C7)** + effort 별칭 구성 |
-| 현재 구성 | memory-core :8420 (Mac colima) / LLM `gpt-5.6-sol-low` / 임베딩 `bge-m3` |
-| 클라이언트 | `ClaudeCodeAdapter` 훅 — 실전 동작 확인 (프록시 없이, 구독 유지) |
-| **다음** | **M2** — oci-ko 이관 (M1 은 훅 어댑터로 대체 달성) |
+| 호스트 | oci-ko. 컨테이너 3개 + 스냅샷 배치, 전부 systemd |
+| 공개 경로 | `cliproxy-memd.h.rockheung.xyz` (기억 있음) · `memory.h.rockheung.xyz` (게이트웨이) |
+| 로컬 상태 | **없음.** SQLite 파일도 도커 볼륨도 쓰지 않는다 |
+| LLM / 임베딩 | `gpt-5.6-sol-low` / `bge-m3` (dgx ollama) |
+| 백업 | 매일 03:20 KST 스냅샷, 14벌 보존, 복구 실증 완료 |
 
-### M0 이후 재조정 요약
+---
 
-| 항목 | M0 전 | M0 후 |
+## 완료 기록
+
+| | 내용 | 결과 |
 |---|---|---|
-| 멀티머신 공유 | Turso 필요할지도 | **불필요. 확인됨** |
-| libSQL 백엔드 | 우선순위 상 | **하 — 백업 자동화 목적만 남음** |
-| 벡터 검색 | 선택 | **한국어에선 필수** (F6) |
-| reasoning effort | 경로 없음 | **해결 — cliproxy 별칭** (F7) |
-| 실사용 연결 | 미검토 | ✅ **훅 어댑터로 해결** — 프록시 불필요, 구독 유지 |
-| L1 추출 모델 | 미정 | `gpt-5.6-sol-low` (A/B 결과, F11) |
+| **M0** | Gateway 중앙화가 설정만으로 되는가 | C0–C7 전부 통과 → [`06-M0-RESULT.md`](06-M0-RESULT.md). 여기서 원래 목표 달성 |
+| **M1** | 실사용 연결 | 프록시 대신 **훅 어댑터**로 해결. LLM 경로를 안 건드려 구독 유지 |
+| **M2** | oci-ko 상시화 | 3컨테이너 + systemd + NPM + 방화벽 → [`12-M2-DEPLOYMENT.md`](12-M2-DEPLOYMENT.md) |
+| **M3** | 계약 테스트 하네스 복원 | upstream 이 호출부만 지워둔 854 LOC 본체를 되살림. sqlite 48 green |
+| **M4** | `LibsqlMetadataStore` | 계약 96/96 (sqlite 48 + libsql 48) → [`09`](09-LIBSQL-METADATA-STORE.md) |
+| **M5** | `LibsqlMemoryStore` | e2e 7/7, KNN 55ms, 격리를 SQL 로 내림 → [`11`](11-LIBSQL-MEMORY-STORE.md) |
+| **M6** | L2/L3 마크다운 배치 | DB 대신 **S3 백엔드**로 해결. 통합 16/16 → [`08`](08-S3-STORAGE-BACKEND.md) |
+| **M7** | Skill store | 스토어 10/10 + 게이트웨이 HTTP 5/5. 활성 상태 |
+
+M6 는 계획(프로필을 DB 테이블로)과 다르게 갔다. 마크다운을 오브젝트 스토리지에
+두면 `IStorageBackend` 한 곳만 갈아끼우면 되고 `pullProfiles`/`syncProfiles` 5개
+optional 메서드를 구현할 필요가 없다 — 더 싸고 upstream 파일을 덜 건드린다.
+
+### M0 이후 뒤집힌 판단
+
+| 항목 | M0 전 | 최종 |
+|---|---|---|
+| 멀티머신 공유 | Turso 가 필요할지도 | **불필요했다.** 설정만으로 됐다 |
+| libSQL 백엔드 | 공유를 위해 필요 | **DB 운영 회피가 진짜 목적**이었다 |
+| 벡터 검색 | 선택 | 한국어에선 **필수** (F6) |
+| 실사용 연결 | MemoryProxy 경유 | **훅 어댑터** — 프록시 불필요, 구독 유지 |
+| L2/L3 배치 | DB 테이블 | **오브젝트 스토리지** |
+
+---
+
+## 업스트림 트랙 — 폐기
+
+원래 U1~U3(seam Issue, docs PR 2건)이 있었다. **폐기한다. upstream 에는 아무것도
+보내지 않는다** — PR·이슈·푸시 전부. `upstream` 리모트는 push URL 을 막아뒀다.
+
+이 포크는 기여가 아니라 **구조를 가져와 스토리지를 이식**하는 것이다. 따라서 upstream
+파일 수정의 평가 기준은 "PR 로 낼 만한가"가 아니라 "다음 릴리스 드롭에서 살아남는가"다.
+측정치와 리베이스 절차는 [`../FORK.md`](../FORK.md) 에 있다.
+
+---
+
+## 남은 운영 항목
+
+우선순위 순. 전부 기능이 아니라 위생 문제다.
+
+- [ ] **고아 벡터 인덱스 409MB** — `m_l1_emb_shadow` 가 DB 의 87%.
+      `libsql_vector_meta_shadow` 에 `m_l1_emb` 가 등록돼 있는데 베이스 테이블이
+      스키마에 없다. 예전 스파이크 잔해. 지우면 스냅샷이 55MB → 6MB.
+      ⚠️ 운영 DB 를 건드리는 작업이고, 벡터 인덱스는 [`11`](11-LIBSQL-MEMORY-STORE.md)
+      부록 2 의 함정이 있다. **스냅샷 확보 후 진행할 것.**
+- [ ] **재부팅 검증 미실시** — `memory-stack.service` `enabled`, iptables 영속화
+      확인했으나 실제 재부팅은 안 해봤다. 다음 재부팅 때 컨테이너 3개 자동 기동 확인.
+- [ ] **어댑터 state 파일 TTL 없음** — `~/.claude/memory-adapter/*.json` 이 세션마다
+      쌓인다 (현재 14개, 최고령 2026-08-20). 7일 청소 필요.
+- [ ] **훅 콜드스타트 3.2초** — 예산 15초 안이고 이후 호출은 0.6초라 급하진 않다.
+      상시 체감이 나쁘면 조정.
+- [ ] **`spike/` 694줄** — 착수 전 가정 검증용 일회성 스크립트. 결과는
+      [`07-TURSO-SPIKE.md`](07-TURSO-SPIKE.md) 에 다 있으니 코드는 역할이 끝났다.
+      둘지 지울지 결정만 하면 된다.
+- [ ] **`-p` 세션마다 새 session_id** → L3 페르소나가 매번 재주입된다.
+      `MEMORY_ADAPTER_LEAN=1` 로 회피 가능. 기본값으로 둘지 검토.
+
+해결된 것: 9409 등 테스트 데이터는 Turso 이전 과정에서 사라졌다 (현재 L0 32건,
+전부 실사용). Mac 로컬 볼륨은 M0 검증 데이터라 이전하지 않기로 확정했다.
+
+---
+
+## 리베이스할 때
+
+upstream 은 스쿼시된 릴리스 드롭으로 코드를 떨군다. 우리 캐리 패치 16곳 중
+`gateway/server.ts`(+37/-7)와 `tdai-core.ts`(+27/-6)가 매 드롭 피격 파일에 있다.
+
+충돌 해소보다 **이식이 살아있는지 증명하는 것**이 중요하다. 검증 명령과 노출도
+표는 [`../FORK.md`](../FORK.md) 의 "리베이스 노출도 / 리베이스 절차" 참조.

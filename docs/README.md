@@ -6,6 +6,10 @@
 **출발 질문:** 여러 머신(Mac / GPU-1 / GPU-2 / Pi)이 하나의 에이전트 기억을
 공유하게 하려면 어디를 건드려야 하는가. Turso 가 그 자리를 채울 수 있는가.
 
+**결론 (2026-08-25):** 공유는 Turso 없이 설정만으로 됐다(M0). 그래서 Turso 로 간
+진짜 이유는 공유가 아니라 **DB 를 직접 운영하지 않기 위해서**다. 이식은 끝났고
+상태는 전부 Turso + Oracle Object Storage 에 있다 — 현황은 [ROADMAP.md](ROADMAP.md).
+
 | 문서 | 내용 |
 |---|---|
 | [00-OVERVIEW.md](00-OVERVIEW.md) | 4개 컴포넌트 구조, 4계층 메모리 모델, 저장 계층 4개 심 |
@@ -14,8 +18,14 @@
 | [03-CENTRALIZATION.md](03-CENTRALIZATION.md) | 실제 멀티머신 설계안, 안 되는 조합, 30분 검증 절차 |
 | [04-MARKDOWN-PLACEMENT.md](04-MARKDOWN-PLACEMENT.md) | L2/L3 마크다운을 어디에 둘 것인가 — 3개 안 비교 + `agentId` 함정 |
 | [05-UPSTREAM-OR-FORK.md](05-UPSTREAM-OR-FORK.md) | 업스트림 PR vs 포크 — 거버넌스 실측 데이터 기반 판정 |
-| [ROADMAP.md](ROADMAP.md) | **작업 계획** — M0(코드 0) ~ M5 + 업스트림 트랙 |
-| [06-M0-RESULT.md](06-M0-RESULT.md) | **M0 실측 결과** — Gateway 중앙화 검증 통과, 발견 9건 |
+| [06-M0-RESULT.md](06-M0-RESULT.md) | **M0 실측 결과** — Gateway 중앙화 검증 통과, 발견 F1–F12 |
+| [07-TURSO-SPIKE.md](07-TURSO-SPIKE.md) | 착수 전 가정 5개 실측 — sync 드라이버 기각, 네이티브 벡터 확정 |
+| [08-S3-STORAGE-BACKEND.md](08-S3-STORAGE-BACKEND.md) | `IStorageBackend` → 오브젝트 스토리지. 세그먼트 append, Oracle 함정 |
+| [09-LIBSQL-METADATA-STORE.md](09-LIBSQL-METADATA-STORE.md) | `IMetadataStore` → Turso. 계약 96/96, 트랜잭션 핸들 함정 |
+| [10-MANAGED-INTEGRATION.md](10-MANAGED-INTEGRATION.md) | 게이트웨이 배선 — 응답 200 인데 아무것도 안 쌓이던 두 건 |
+| [11-LIBSQL-MEMORY-STORE.md](11-LIBSQL-MEMORY-STORE.md) | `IMemoryStore` → Turso. KNN 재작성, WHERE 없는 DELETE 가 인덱스를 깬다 |
+| [12-M2-DEPLOYMENT.md](12-M2-DEPLOYMENT.md) | oci-ko 상시 배포 — 컨테이너·systemd·방화벽·NPM |
+| [ROADMAP.md](ROADMAP.md) | **현황** — M0~M7 완료, 남은 운영 항목 |
 
 ---
 
