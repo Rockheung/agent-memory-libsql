@@ -110,6 +110,49 @@ upstream 은 **스쿼시된 릴리스 드롭**으로 코드를 떨군다 (`feat:
    `MemoryProxy` 에는 테스트가 없다. PR 은 아직 열지 않았다.
 4. 6곳을 넘겨야 할 일이 생기면 **먼저 upstream 에 seam Issue 를 던진다** (docs/ROADMAP.md U1 참조).
 
+## 이 포크가 뭘 하는 것인가 (프레임 고정)
+
+**upstream 의 구조를 가져와 스토리지 계층을 이식하는 것**이다. upstream 에 기여하지
+않는다 — PR·이슈·푸시 전부 하지 않는다. `upstream` 리모트는 push URL 을
+`DISABLED_NO_PUSH_TO_UPSTREAM` 으로 막아뒀다 (fetch 는 살아있다).
+
+따라서 upstream 파일 수정의 품질 지표는 **"PR 로 낼 만한가" 가 아니라
+"다음 릴리스 드롭에서 살아남는가" 다.** 아래를 지표로 쓴다.
+
+### 리베이스 노출도 (2026-08-25 실측)
+
+upstream 은 최근 20 커밋 중 **실제 코드 드롭이 3 번**이고 전부 스쿼시 대량
+투하다 (`v2.0.1-beta.1` = 160 파일 +20,172). 우리 캐리 패치가 그 드롭에서
+몇 번 피격됐는지:
+
+| 파일 | 우리 변경 | 3드롭 중 피격 |
+|---|---|---|
+| `MemoryCore/src/gateway/server.ts` | +37/-7 | **3** |
+| `MemoryCore/src/core/tdai-core.ts` | +27/-6 | **3** |
+| `MemoryCore/src/core/skill/types.ts` | +3/-3 | **3** |
+| `MemoryProxy/src/types.ts` · `config.ts` | +15 | **3** |
+| `MemoryCore/package.json` | +2 | 3 |
+| `core/storage/types.ts` · `metadata/store/interface.ts` · `utils/pipeline-factory.ts` | +18/-2 | 2 |
+| 나머지 6개 (팩토리·store-pool·manifest·config) | +197/-15 | 1 |
+
+**덩치 큰 둘(`gateway/server.ts`, `tdai-core.ts`)이 매 드롭 피격 파일에 있다.**
+리베이스 시 여기부터 본다.
+
+### 리베이스 절차
+
+진짜 방어선은 패치가 아니라 **이식이 살아있는지 증명하는 테스트**다.
+`git rebase feat/server_team` 후 반드시 아래를 통과시킨다.
+
+```bash
+cd MemoryCore
+npx vitest run src/metadata/store/          # 계약 96 (sqlite 48 + libsql 48)
+npx tsx scripts/e2e-libsql.ts               # 메모리 스토어 7
+npx tsx scripts/e2e-s3.ts                   # S3 백엔드 16
+```
+
+하나라도 깨지면 그 드롭은 **이식이 깨진 것**이지 충돌 해소 실패가 아니다.
+docs/09·11 의 함정(트랜잭션 핸들, WHERE 없는 DELETE)을 다시 읽을 것.
+
 ## 라이선스
 
 MIT (원본 유지). 이 포크의 추가분도 MIT.
