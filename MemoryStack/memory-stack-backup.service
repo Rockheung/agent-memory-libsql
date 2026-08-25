@@ -1,0 +1,11 @@
+[Unit]
+Description=Memory Stack snapshot (Turso + S3)
+After=memory-stack.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/memory-fork/MemoryStack
+ExecStart=/usr/bin/docker compose --profile backup run --rm backup
+TimeoutStartSec=1800

@@ -170,6 +170,33 @@ services:
       timeout: 5s
       retries: 6
 
+  # 스냅샷 배치. 상시 기동하지 않는다 — profiles 로 빼두고 타이머가 run --rm 으로 부른다.
+  #   docker compose --profile backup run --rm backup
+  # core 이미지를 그대로 쓴다 (@libsql/client / @aws-sdk/client-s3 가 이미 들어있다).
+  backup:
+    image: memory-core-libsql:local
+    profiles: ["backup"]
+    container_name: ms-backup
+    # Turso/S3 는 공인망이다. host 로 두면 wg0 바인딩 문제를 안 겪는다.
+    network_mode: host
+    environment:
+      TURSO_URL: ${TURSO_URL:?}
+      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:?}
+      S3_ENDPOINT: ${S3_ENDPOINT:?}
+      S3_REGION: ${S3_REGION:-us-ashburn-1}
+      S3_BUCKET: ${S3_BUCKET:?}
+      S3_PREFIX: ${S3_PREFIX:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    working_dir: /app
+    volumes:
+      # /app 하위여야 한다. ESM 은 임포트한 파일 위치에서 node_modules 를 찾지
+      # cwd 를 보지 않는다 — /opt 에 두면 @libsql/client 를 못 찾는다.
+      - ./backup:/app/backup:ro
+      - ${BACKUP_DIR:-/var/backups/memory-stack}:/backup
+    entrypoint: ["node", "/app/backup/snapshot.mjs"]
+
 networks:
   ms:
     driver: bridge

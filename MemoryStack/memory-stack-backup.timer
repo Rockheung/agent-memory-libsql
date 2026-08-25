@@ -1,0 +1,11 @@
+[Unit]
+Description=Memory Stack snapshot 매일 실행
+
+[Timer]
+# 03:20 KST. 정각을 피하고 20분 지터를 줘서 다른 배치와 겹치지 않게 한다.
+OnCalendar=*-*-* 03:20:00 Asia/Seoul
+RandomizedDelaySec=1200
+Persistent=true
+
+[Install]
+WantedBy=timers.target
