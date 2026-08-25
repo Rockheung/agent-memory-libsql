@@ -21,7 +21,8 @@
 | `feat/server_team` | **upstream 미러.** upstream 의 기본 브랜치를 그대로 추적 | **절대 커밋 금지** |
 | `rock/main` | 이 포크의 작업 트렁크 | docs / ROADMAP / 통합 |
 | `feat/*` | 기능 작업 | `rock/main` 에서 분기 |
-| `pr/*` | upstream 에 보낼 PR | **`feat/server_team` 에서 분기** (내 커밋 섞이면 안 됨) |
+
+upstream 에 보내는 브랜치는 **없다.** 아래 "이 포크가 뭘 하는 것인가" 참조.
 
 현재 브랜치:
 
@@ -29,10 +30,9 @@
 |---|---|
 | `rock/main` | 트렁크 |
 | `feat/s3-storage-backend` · `feat/libsql-metadata-store` · `feat/libsql-memory-store` · `feat/m2-deployment` | 전부 `rock/main` 에 머지 완료 (기록용으로 남김) |
-| `pr/proxy-auth-bearer` | upstream 행. `MemoryProxy` 3파일 +20 줄만 담음 |
 
 `feat/m2-deployment` 는 원래 `feat/proxy-auth-bearer` 였다 — 실제 내용이 M2
-배포라 2026-08-25 에 개명했다. `pr/` 쪽과 이름이 겹쳐 헷갈리기도 했다.
+배포라 2026-08-25 에 개명했다.
 
 ```bash
 git remote -v
@@ -101,13 +101,15 @@ upstream 은 **스쿼시된 릴리스 드롭**으로 코드를 떨군다 (`feat:
    | `src/config.ts` | 기본값 + `TDAI_GATEWAY_API_KEY` env 폴백 |
 
    **하위 호환된다** — `apiKey` 가 비면 헤더를 안 붙여 기존 배포와 동일하다.
-   그래서 upstream PR 후보이기도 하다 (docs/ROADMAP.md U 트랙).
 
-   2026-08-25, 이 3파일만 떼어 **`pr/proxy-auth-bearer`** 를 `feat/server_team`
-   에서 새로 땄다 (커밋 `00e313c`, 4파일 +25/-0, 주석은 영문 —
-   `config.example.yaml` 만 파일 언어에 맞춰 중문). upstream 기준 타입
-   에러 6개는 이 변경 전후가 동일하다 — 전부 upstream 에 원래 있던 것이다.
-   `MemoryProxy` 에는 테스트가 없다. PR 은 아직 열지 않았다.
+   ⚠️ **검증 근거가 약하다.** upstream `MemoryProxy` 에는 테스트가 아예 없어
+   (`npm test` = "No test files found") 이 수정의 근거는 oci-ko 실배포에서
+   인증이 통과한 것뿐이다. 타입 에러 6 개는 이 변경 전후가 동일하다 — 전부
+   upstream 에 원래 있던 것이다.
+
+   upstream 은 프로덕션에서 `TDAI_GATEWAY_API_KEY` 를 켜지 않는다
+   (`config.example.yaml` 주석에 그렇게 써있다). 그래서 이 버그를 안 밟는다.
+   우리는 공인 IP 호스트라 켤 수밖에 없어서 드러났다.
 4. 6곳을 넘겨야 할 일이 생기면 **먼저 upstream 에 seam Issue 를 던진다** (docs/ROADMAP.md U1 참조).
 
 ## 이 포크가 뭘 하는 것인가 (프레임 고정)
