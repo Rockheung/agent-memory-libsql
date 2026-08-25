@@ -104,7 +104,8 @@ upstream 은 **스쿼시된 릴리스 드롭**으로 코드를 떨군다 (`feat:
    그래서 upstream PR 후보이기도 하다 (docs/ROADMAP.md U 트랙).
 
    2026-08-25, 이 3파일만 떼어 **`pr/proxy-auth-bearer`** 를 `feat/server_team`
-   에서 새로 땄다 (커밋 `53ed762`, +20/-0, 주석은 영문). upstream 기준 타입
+   에서 새로 땄다 (커밋 `00e313c`, 4파일 +25/-0, 주석은 영문 —
+   `config.example.yaml` 만 파일 언어에 맞춰 중문). upstream 기준 타입
    에러 6개는 이 변경 전후가 동일하다 — 전부 upstream 에 원래 있던 것이다.
    `MemoryProxy` 에는 테스트가 없다. PR 은 아직 열지 않았다.
 4. 6곳을 넘겨야 할 일이 생기면 **먼저 upstream 에 seam Issue 를 던진다** (docs/ROADMAP.md U1 참조).
