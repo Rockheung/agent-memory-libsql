@@ -23,6 +23,17 @@
 | `feat/*` | 기능 작업 | `rock/main` 에서 분기 |
 | `pr/*` | upstream 에 보낼 PR | **`feat/server_team` 에서 분기** (내 커밋 섞이면 안 됨) |
 
+현재 브랜치:
+
+| 브랜치 | 상태 |
+|---|---|
+| `rock/main` | 트렁크 |
+| `feat/s3-storage-backend` · `feat/libsql-metadata-store` · `feat/libsql-memory-store` · `feat/m2-deployment` | 전부 `rock/main` 에 머지 완료 (기록용으로 남김) |
+| `pr/proxy-auth-bearer` | upstream 행. `MemoryProxy` 3파일 +20 줄만 담음 |
+
+`feat/m2-deployment` 는 원래 `feat/proxy-auth-bearer` 였다 — 실제 내용이 M2
+배포라 2026-08-25 에 개명했다. `pr/` 쪽과 이름이 겹쳐 헷갈리기도 했다.
+
 ```bash
 git remote -v
 # origin    https://github.com/Rockheung/agent-memory-libsql.git
@@ -91,6 +102,11 @@ upstream 은 **스쿼시된 릴리스 드롭**으로 코드를 떨군다 (`feat:
 
    **하위 호환된다** — `apiKey` 가 비면 헤더를 안 붙여 기존 배포와 동일하다.
    그래서 upstream PR 후보이기도 하다 (docs/ROADMAP.md U 트랙).
+
+   2026-08-25, 이 3파일만 떼어 **`pr/proxy-auth-bearer`** 를 `feat/server_team`
+   에서 새로 땄다 (커밋 `53ed762`, +20/-0, 주석은 영문). upstream 기준 타입
+   에러 6개는 이 변경 전후가 동일하다 — 전부 upstream 에 원래 있던 것이다.
+   `MemoryProxy` 에는 테스트가 없다. PR 은 아직 열지 않았다.
 4. 6곳을 넘겨야 할 일이 생기면 **먼저 upstream 에 seam Issue 를 던진다** (docs/ROADMAP.md U1 참조).
 
 ## 라이선스
