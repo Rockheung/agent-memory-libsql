@@ -78,11 +78,10 @@ optional 메서드를 구현할 필요가 없다 — 더 싸고 upstream 파일�
 
 우선순위 순. 전부 기능이 아니라 위생 문제다.
 
-- [ ] **고아 벡터 인덱스 409MB** — `m_l1_emb_shadow` 가 DB 의 87%.
-      `libsql_vector_meta_shadow` 에 `m_l1_emb` 가 등록돼 있는데 베이스 테이블이
-      스키마에 없다. 예전 스파이크 잔해. 지우면 스냅샷이 55MB → 6MB.
-      ⚠️ 운영 DB 를 건드리는 작업이고, 벡터 인덱스는 [`11`](11-LIBSQL-MEMORY-STORE.md)
-      부록 2 의 함정이 있다. **스냅샷 확보 후 진행할 것.**
+- [x] **고아 벡터 인덱스 409MB 제거** (2026-08-28 완료) — `m_l1_emb_shadow` 를
+      DROP 했다. 스키마는 깨끗해졌고 무결성·KNN·인덱스 삽입 전부 정상.
+      **다만 파일 크기는 안 줄었다** — Turso 가 `VACUUM` 을 거부한다. 455MB 가
+      빈 페이지로 남아 재사용을 기다린다. 실사용은 16.6MB.
 - [ ] **재부팅 검증 미실시** — `memory-stack.service` `enabled`, iptables 영속화
       확인했으나 실제 재부팅은 안 해봤다. 다음 재부팅 때 컨테이너 3개 자동 기동 확인.
 - [ ] **어댑터 state 파일 TTL 없음** — `~/.claude/memory-adapter/*.json` 이 세션마다

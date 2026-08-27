@@ -229,8 +229,12 @@ upstream 에는 **아무것도 보내지 않는다.** `upstream` 리모트는 pu
 - `ollama` 와 `cliproxy` 가 compose 밖 — 스택이 두 갈래로 관리된다
 
 **위생**
-- Turso 고아 벡터 인덱스 **409MB** (DB 의 87%, 백업 대부분). `m_l1_emb_shadow` —
-  베이스 테이블 없이 shadow 만 남은 잔해. 지우면 스냅샷이 55MB → 6MB
+- Turso 파일이 **472MB 인데 실사용은 16.6MB** (빈 페이지 96%). 고아 인덱스
+  `m_l1_emb_shadow` 409MB 를 2026-08-28 에 제거했으나 **Turso 가 `VACUUM` 을
+  막아**(`SQL not allowed statement`) 파일은 안 줄었다. 백업도 gz 58MB 그대로다.
+  빈 페이지는 앞으로 재사용되므로 기능상 무해하다. 진짜 회수하려면 덤프 후
+  새 DB 로 이관해야 하는데, 백업 14벌이 812MB 이고 디스크 여유가 146GB 라
+  현재는 실익이 없다
 - S3 `prod/` 밖 테스트 잔해 114개
 - Mac 도커 볼륨 `tdai-memory-core-data`, oci-ko `*.unused` 8.6MB
 - `spike/` 694줄
