@@ -12,6 +12,9 @@
 
 ## 현재 운영 구성
 
+> 자세한 아키텍처는 [`13-ARCHITECTURE.md`](13-ARCHITECTURE.md) 에 있다.
+> 아래는 요약이고, 어긋나면 그쪽이 맞다.
+
 ```
 클라이언트 ──► edge :8090 ──► memory-proxy ──► cliproxy (10.77.0.4:8317)
    (헤더 주입)        └─────► memory-core :8420
@@ -26,7 +29,7 @@ Claude Code ──► 훅 어댑터 ──────────────�
 | 호스트 | oci-ko. 컨테이너 3개 + 스냅샷 배치, 전부 systemd |
 | 공개 경로 | `cliproxy-memd.h.rockheung.xyz` (기억 있음) · `memory.h.rockheung.xyz` (게이트웨이) |
 | 로컬 상태 | **없음.** SQLite 파일도 도커 볼륨도 쓰지 않는다 |
-| LLM / 임베딩 | `gpt-5.6-sol-low` / `bge-m3` (dgx ollama) |
+| LLM / 임베딩 | `gpt-5.6-sol-low` / `bge-m3` (**oci-ko 로컬 ollama**) |
 | 백업 | 매일 03:20 KST 스냅샷, 14벌 보존, 복구 실증 완료 |
 
 ---

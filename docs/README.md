@@ -25,6 +25,7 @@
 | [10-MANAGED-INTEGRATION.md](10-MANAGED-INTEGRATION.md) | 게이트웨이 배선 — 응답 200 인데 아무것도 안 쌓이던 두 건 |
 | [11-LIBSQL-MEMORY-STORE.md](11-LIBSQL-MEMORY-STORE.md) | `IMemoryStore` → Turso. KNN 재작성, WHERE 없는 DELETE 가 인덱스를 깬다 |
 | [12-M2-DEPLOYMENT.md](12-M2-DEPLOYMENT.md) | oci-ko 상시 배포 — 컨테이너·systemd·방화벽·NPM |
+| [13-ARCHITECTURE.md](13-ARCHITECTURE.md) | **현재 아키텍처** — 지금 상태는 여기만 본다 |
 | [ROADMAP.md](ROADMAP.md) | **현황** — M0~M7 완료, 남은 운영 항목 |
 
 ---
