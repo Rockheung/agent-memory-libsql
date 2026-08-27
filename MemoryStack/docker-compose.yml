@@ -39,12 +39,10 @@ services:
   core:
     # 포크 코드가 필요하다. upstream 이미지를 베이스로 바뀐 소스 + 관리형 백엔드
     # 의존성만 얹는다 (core/Dockerfile 주석 참조).
-    build:
-      context: ..                      # 레포 루트 — MemoryCore/src 에 접근해야 한다
-      dockerfile: MemoryStack/core/Dockerfile
-      args:
-        BASE: ${MEMORY_CORE_IMAGE:-agentmemory/memory-core:latest}
-    image: memory-core-libsql:local
+    # 이미지는 CI 가 빌드해 ghcr 에 올린다 (.github/workflows/build-images.yml).
+    # 여기서 빌드하지 않는다 — 그래야 "지금 도는 게 어느 커밋인가" 에 답할 수 있다.
+    # 특정 커밋으로 고정하려면 .env 의 IMAGE_TAG 에 커밋 SHA 를 넣는다.
+    image: ghcr.io/rockheung/memory-core-libsql:${IMAGE_TAG:-latest}
     container_name: ms-core
     restart: unless-stopped
     depends_on:
@@ -117,12 +115,7 @@ services:
 
   proxy:
     # 포크 빌드가 필요하다 — auth Bearer 수정 (proxy/Dockerfile 주석 참조)
-    build:
-      context: ..
-      dockerfile: MemoryStack/proxy/Dockerfile
-      args:
-        BASE: ${MEMORY_PROXY_IMAGE:-agentmemory/memory-proxy:latest}
-    image: memory-proxy-auth:local
+    image: ghcr.io/rockheung/memory-proxy-auth:${IMAGE_TAG:-latest}
     container_name: ms-proxy
     network_mode: host          # 상위 LLM(cliproxy)이 wg0 전용 바인딩이라 필요하다
     restart: unless-stopped
@@ -174,7 +167,7 @@ services:
   #   docker compose --profile backup run --rm backup
   # core 이미지를 그대로 쓴다 (@libsql/client / @aws-sdk/client-s3 가 이미 들어있다).
   backup:
-    image: memory-core-libsql:local
+    image: ghcr.io/rockheung/memory-core-libsql:${IMAGE_TAG:-latest}
     profiles: ["backup"]
     container_name: ms-backup
     # Turso/S3 는 공인망이다. host 로 두면 wg0 바인딩 문제를 안 겪는다.

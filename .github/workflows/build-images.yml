@@ -1,0 +1,67 @@
+# 포크 이미지를 ghcr 에 올린다.
+#
+# 이전에는 oci-ko 로 소스를 tar 로 밀어넣고 거기서 빌드했다. 그래서 "지금
+# 돌고 있는 게 어느 커밋인가" 에 답할 방법이 없었다. 이제 이미지 태그가
+# 커밋이다.
+#
+# 러너는 arm64 다 — oci-ko(Ampere aarch64)와 같은 아키텍처여야 하고,
+# public 레포라 ubuntu-24.04-arm 이 무료다.
+name: build-images
+
+on:
+  push:
+    branches: [rock/main]
+    paths:
+      - "MemoryCore/src/**"
+      - "MemoryCore/package.json"
+      - "MemoryProxy/src/**"
+      - "MemoryStack/core/Dockerfile"
+      - "MemoryStack/proxy/Dockerfile"
+      - ".github/workflows/build-images.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: memory-core-libsql
+            dockerfile: MemoryStack/core/Dockerfile
+            base: agentmemory/memory-core@sha256:1298a4e97b38bd157a473a8a111a57bdab75121c23b5828f0869913532f875f2
+          - name: memory-proxy-auth
+            dockerfile: MemoryStack/proxy/Dockerfile
+            base: agentmemory/memory-proxy@sha256:af4f16f4273c9900dc6925dabf5e47711a20003f85b19f1de8db8376d2e29daa
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          # 베이스를 다이제스트로 고정한다. latest 를 물면 upstream 이 조용히
+          # 바뀌었을 때 같은 커밋에서 다른 이미지가 나온다.
+          build-args: BASE=${{ matrix.base }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
