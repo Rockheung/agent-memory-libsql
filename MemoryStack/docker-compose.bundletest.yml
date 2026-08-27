@@ -1,0 +1,11 @@
+# 번들 이미지를 운영 core 와 **동일한 environment/volumes** 로 띄워 비교한다.
+# env 를 손으로 옮기면 매핑을 빠뜨려 "틀린 이유로 통과/실패" 한다.
+services:
+  core-test:
+    extends:
+      file: docker-compose.yml
+      service: core
+    image: memory-core-bundle:test
+    container_name: ms-core-test
+    environment:
+      TDAI_GATEWAY_PORT: "8421"

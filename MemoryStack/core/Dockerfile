@@ -65,7 +65,14 @@ RUN npm install --no-audit --no-fund --omit=dev \
 COPY --from=build /build/server.js /app/server.js
 RUN printf '{"type":"module"}' > /app/package.json
 
-ENV NODE_ENV=production
+# 베이스 이미지가 ENV 로 박아두던 값들. 번들 이미지는 이걸 상속받지 못하므로
+# 직접 선언한다. 특히 TDAI_GATEWAY_CONFIG 가 없으면 설정 파일을 아예 안 읽고
+# 기본값(backend=sqlite, embedding=none, model=gpt-4o)으로 조용히 뜬다.
+ENV NODE_ENV=production \
+    TDAI_GATEWAY_CONFIG=/data/config/tdai-gateway.yaml \
+    TDAI_GATEWAY_HOST=0.0.0.0 \
+    TDAI_DATA_DIR=/data/tdai-memory \
+    NODE_OPTIONS=--max-old-space-size=1536
 EXPOSE 8420
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${TDAI_GATEWAY_PORT:-8420}/health" || exit 1
