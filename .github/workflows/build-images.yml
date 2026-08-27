@@ -57,9 +57,11 @@ jobs:
           # 바뀌었을 때 같은 커밋에서 다른 이미지가 나온다.
           build-args: BASE=${{ matrix.base }}
           push: true
+          # 소유자를 소문자로 박는다. github.repository_owner 는 "Rockheung" 이라
+          # 그대로 쓰면 "repository name must be lowercase" 로 죽는다.
           tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}:latest
+            ghcr.io/rockheung/${{ matrix.name }}:${{ github.sha }}
+            ghcr.io/rockheung/${{ matrix.name }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
