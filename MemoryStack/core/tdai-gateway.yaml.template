@@ -17,6 +17,12 @@ llm:
   timeoutMs: 300000
 
 memory:
+  # BM25 희소 벡터 인코더를 끈다. 이건 TCVDB 백엔드 전용이고, libSQL 스토어의
+  # "BM25" 는 SQLite FTS5 내장 bm25() 랭크 함수라 별개다(libsql-store 와
+  # libsql-skill-store 는 BM25LocalEncoder 를 참조조차 하지 않는다).
+  # 켜면 274MB 짜리 IDF 사전(@tencentdb-agent-memory/tcvdb-text)이 필요한데
+  # 번들 이미지에는 스텁만 들어있어 기동이 실패한다.
+  bm25: { enabled: false }
   promptMode: chat
   capture: { enabled: true }
   extraction:
