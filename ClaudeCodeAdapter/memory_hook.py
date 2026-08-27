@@ -243,6 +243,18 @@ def main() -> None:
     if cfg is None:
         sys.exit(0)
 
+    # 어느 진입점에서만 붙일지. 비어 있으면(기본) 전부 붙는다.
+    #   cli      = 대화형 claude
+    #   sdk-cli  = claude -p (헤드리스)
+    # 실측: -p 는 부모가 cli 여도 sdk-cli 로 덮어쓴다. 상속이 아니라 실행 모드가
+    # 정하는 값이라 판별에 쓸 수 있다 (2026-08-28, Claude Code 2.1.234).
+    allowed = cfg.get("only_entrypoints")
+    if allowed:
+        ep = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "")
+        if ep not in allowed:
+            log(f"entrypoint {ep!r} not in {allowed} — skip")
+            sys.exit(0)
+
     # 자동화(claude -p 루프)용 경량 모드: L1 만 주입, L3/L2 는 건너뛴다.
     if os.environ.get("MEMORY_ADAPTER_LEAN"):
         cfg["inject_persona"] = False

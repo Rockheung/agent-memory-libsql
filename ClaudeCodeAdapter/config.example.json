@@ -16,5 +16,8 @@
   "inject_scenes": true,
   "scene_limit": 10,
   "max_message_chars": 8000,
-  "scope_by_cwd": false
+  "scope_by_cwd": false,
+  "only_entrypoints": [
+    "sdk-cli"
+  ]
 }
