@@ -16,6 +16,7 @@ on:
       - "MemoryCore/package.json"
       - "MemoryProxy/src/**"
       - "MemoryStack/core/Dockerfile"
+      - "MemoryStack/core/stubs/**"
       - "MemoryStack/proxy/Dockerfile"
       - ".github/workflows/build-images.yml"
   workflow_dispatch:
@@ -31,9 +32,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # core 는 upstream 이미지를 베이스로 쓰지 않는다 — esbuild 번들 +
+          # node:22-slim 이라 BASE 인자가 없다.
           - name: memory-core-libsql
             dockerfile: MemoryStack/core/Dockerfile
-            base: agentmemory/memory-core@sha256:1298a4e97b38bd157a473a8a111a57bdab75121c23b5828f0869913532f875f2
+            base: 
           - name: memory-proxy-auth
             dockerfile: MemoryStack/proxy/Dockerfile
             base: agentmemory/memory-proxy@sha256:af4f16f4273c9900dc6925dabf5e47711a20003f85b19f1de8db8376d2e29daa
@@ -55,7 +58,8 @@ jobs:
           file: ${{ matrix.dockerfile }}
           # 베이스를 다이제스트로 고정한다. latest 를 물면 upstream 이 조용히
           # 바뀌었을 때 같은 커밋에서 다른 이미지가 나온다.
-          build-args: BASE=${{ matrix.base }}
+          # base 가 빈 값이면 build-args 도 비운다(core).
+          build-args: ${{ matrix.base && format('BASE={0}', matrix.base) || '' }}
           push: true
           # 소유자를 소문자로 박는다. github.repository_owner 는 "Rockheung" 이라
           # 그대로 쓰면 "repository name must be lowercase" 로 죽는다.
