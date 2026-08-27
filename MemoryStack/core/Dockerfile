@@ -62,6 +62,12 @@ RUN npm install --no-audit --no-fund --omit=dev \
 #   process.argv[1]?.endsWith("server.ts") || endsWith("server.js")
 # 라서, .mjs 로 두면 main() 이 안 불리고 **로그 없이 exit 0** 한다.
 # ESM 으로 실행하려면 옆에 type=module 이 필요하다.
+# 모듈 상대경로로 읽는 데이터 파일. param-registry.ts 가 import.meta.url 기준으로
+# 찾는데, 번들되면 그 기준이 /app/src/metadata/config → /app 으로 바뀐다.
+# 없으면 /v3/meta/auth/verify 가 500 을 내고 **프록시 경유 인증이 전부 실패**한다.
+# (기동과 /health 는 멀쩡해서 헬스체크로는 안 잡힌다.)
+COPY MemoryCore/src/metadata/config/metadata_config_params.json /app/metadata_config_params.json
+
 COPY --from=build /build/server.js /app/server.js
 RUN printf '{"type":"module"}' > /app/package.json
 
