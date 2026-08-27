@@ -7,12 +7,10 @@
   "team_id": "team-xxxxxxxx",
   "agent_id": "agt-xxxxxxxx",
   "user_id": "usr-xxxxxxxx",
-
   "recall_limit": 5,
   "score_threshold": 0.0,
-  "recall_timeout_seconds": 6,
+  "recall_timeout_seconds": 12,
   "write_timeout_seconds": 10,
-
   "inject_persona": true,
   "persona_max_chars": 2000,
   "inject_scenes": true,

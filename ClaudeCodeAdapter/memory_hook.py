@@ -150,7 +150,10 @@ def on_user_prompt(cfg: dict, hook: dict) -> None:
     if not prompt:
         emit("UserPromptSubmit", None)
 
-    budget = float(cfg.get("recall_timeout_seconds", 6))
+    # 6초는 부족하다. ollama 가 임베딩 모델을 5분 유휴에 내리기 때문에, 쉬었다
+    # 돌아온 첫 턴은 모델 재적재(3초+)를 문다. 예산을 넘기면 fail-open 이라
+    # "에러 없이 기억만 사라진" 상태가 되고 사용자는 눈치채지 못한다.
+    budget = float(cfg.get("recall_timeout_seconds", 12))
     deadline = time.time() + budget
     parts: list[str] = []
 

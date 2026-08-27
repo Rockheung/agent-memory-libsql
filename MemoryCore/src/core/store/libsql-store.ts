@@ -142,7 +142,7 @@ export interface L0RecordRow {
   timestamp: number;
 }
 
-const TAG = "[memory-tdai][sqlite]";
+const TAG = "[memory-tdai][libsql]";
 
 /** Persisted metadata about the embedding provider used to generate stored vectors. */
 interface EmbeddingMeta {
@@ -2591,7 +2591,7 @@ export class LibsqlVectorStore implements IMemoryStore {
 
       return { rows, total };
     } catch (err) {
-      this.logger?.warn(`[sqlite] queryL0Paginated failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn(`[libsql] queryL0Paginated failed: ${err instanceof Error ? err.message : String(err)}`);
       return { rows: [], total: 0 };
     }
   }
@@ -2655,7 +2655,7 @@ export class LibsqlVectorStore implements IMemoryStore {
 
       return { rows, total };
     } catch (err) {
-      this.logger?.warn(`[sqlite] queryL1Paginated failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn(`[libsql] queryL1Paginated failed: ${err instanceof Error ? err.message : String(err)}`);
       return { rows: [], total: 0 };
     }
   }
@@ -2669,7 +2669,7 @@ export class LibsqlVectorStore implements IMemoryStore {
     // 造成远超预期的删除范围。空 session 不是有效删除目标，直接拒绝。
     const sessionIdTrimmed = (sessionId ?? "").trim();
     if (!sessionIdTrimmed) {
-      throw new Error("[sqlite] deleteL0BySession requires a non-empty sessionId");
+      throw new Error("[libsql] deleteL0BySession requires a non-empty sessionId");
     }
 
     if (this.degraded) return 0;
@@ -2709,7 +2709,7 @@ export class LibsqlVectorStore implements IMemoryStore {
         throw err;
       }
     } catch (err) {
-      this.logger?.warn(`[sqlite] deleteL0BySession failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn(`[libsql] deleteL0BySession failed: ${err instanceof Error ? err.message : String(err)}`);
       return 0;
     }
   }
@@ -2780,7 +2780,7 @@ export class LibsqlVectorStore implements IMemoryStore {
         throw err;
       }
     } catch (err) {
-      this.logger?.warn(`[sqlite] clearMemoryContent failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.logger?.warn(`[libsql] clearMemoryContent failed: ${err instanceof Error ? err.message : String(err)}`);
       throw err;
     }
   }
