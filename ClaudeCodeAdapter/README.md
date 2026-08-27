@@ -90,3 +90,19 @@ ls    ~/.claude/memory-adapter/                   # 세션별 state (stash·주�
 - 툴 호출 내용은 L0 에 안 들어간다 — user/assistant 텍스트만.
 - 여러 프로젝트를 한 team/agent 로 쓰면 L2/L3 가 섞인다.
   분리하려면 `scope_by_cwd: true` (L0 세션만 분리되고, L2/L3 는 team+agent 라 여전히 공유).
+
+## `mem` — 기록만 할 때
+
+기억을 남기는 데는 LLM 이 필요 없다. 서버가 어차피 자기 모델로 L1 을 뽑는다.
+
+```bash
+./mem.py "oci-ko 백업은 매일 03:20 KST 에 돈다"
+echo "긴 내용" | ./mem.py
+```
+
+`claude -p` 로 같은 일을 하면 Claude Code 시스템 프롬프트·도구 정의 때문에
+호출당 2만 토큰이 넘는다 (실측 2026-08-28: cache_creation 4,838 + cache_read
+18,903, $0.058). `mem` 은 클라이언트 토큰 0 이다. 서버측 추출 비용은 양쪽이 같다.
+
+`claude -p` 가 맞는 경우는 **모델이 실제로 뭔가 처리해야 할 때**다 — 긴 로그에서
+사실을 뽑아낸다든지. 단순 기록이라면 HTTP POST 한 번으로 충분하다.
