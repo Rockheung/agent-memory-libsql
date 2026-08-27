@@ -45,7 +45,7 @@ memory:
   embedding:
     enabled: true
     provider: openai
-    baseUrl: "${EMBED_BASE_URL}"   # dgx ollama
+    baseUrl: "${EMBED_BASE_URL}"   # oci-ko 로컬 ollama (기본). 홈랩 dgx 로 되돌리려면 .env 에서 바꾼다
     apiKey: "ollama"
     model: "bge-m3"
     dimensions: 1024

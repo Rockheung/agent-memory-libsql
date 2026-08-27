@@ -23,7 +23,7 @@ services:
     environment:
       PROXY_UPSTREAM_URL: ${PROXY_UPSTREAM_URL:?}
       PROXY_UPSTREAM_API_KEY: ${PROXY_UPSTREAM_API_KEY:?}
-      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://192.168.88.223:11434/v1}
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://127.0.0.1:11434/v1}
     volumes:
       - ./core:/src:ro
       - core-conf:/out
