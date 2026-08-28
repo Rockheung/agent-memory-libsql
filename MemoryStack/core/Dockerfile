@@ -25,6 +25,8 @@ COPY MemoryStack/core/stubs/ ./stubs/
 #                 빠진다. @node-rs/jieba 도 이것이 끌고 오던 것이라 같이 사라진다.
 #   @libsql/client              → 네이티브 바인딩(@libsql/linux-arm64-gnu)을 런타임
 #                                 require 로 찾는다. 번들에 못 넣으므로 런타임 설치.
+#   @aws-sdk/client-s3          → 번들 안으로 들어가지만, backup/snapshot.mjs 가
+#                                 이 이미지에서 별도 프로세스로 돌며 import 한다.
 #   @node-rs/jieba              → 런타임에 별도 설치한다(아래). libsql-store 가
 #                                 require 로 부르고 없으면 정규식 분할로 떨어지는데,
 #                                 그건 토큰화 품질을 조용히 낮추는 것이라 넣는다. 14MB.
@@ -56,6 +58,7 @@ RUN apt-get update \
 RUN npm install --no-audit --no-fund --omit=dev \
       @node-rs/jieba@^2.0.1 \
       @libsql/client@^0.17.4 \
+      @aws-sdk/client-s3@^3.1113.0 \
  && npm cache clean --force
 
 # 확장자가 .js 여야 한다. server.ts:24 의 main 가드가

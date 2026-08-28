@@ -47,6 +47,7 @@ services:
     restart: unless-stopped
     depends_on:
       core-config: {condition: service_completed_successfully}
+      sqld: {condition: service_healthy}
     # core 도 L1/L2/L3 추출을 위해 cliproxy(10.77.0.4, wg0 전용 바인딩)를 직접 부른다.
     # 브리지에 두면 EHOSTUNREACH 로 추출이 조용히 0건이 된다 — 응답은 정상이라
     # 로그를 안 보면 놓친다. proxy/edge 와 같은 이유로 host 네트워크를 쓴다.
@@ -65,10 +66,10 @@ services:
 
       # ── 메타데이터 → Turso ──
       TDAI_METADATA_LIBSQL_URL: "${TURSO_URL:?TURSO_URL 을 .env 에 설정하세요}"
-      TDAI_METADATA_LIBSQL_AUTH_TOKEN: "${TURSO_AUTH_TOKEN:?}"
+      TDAI_METADATA_LIBSQL_AUTH_TOKEN: "${TURSO_AUTH_TOKEN:-}"
       # ── L0/L1 + 벡터 + Skill → Turso ──
       TDAI_STORE_LIBSQL_URL: "${TURSO_URL:?}"
-      TDAI_STORE_LIBSQL_AUTH_TOKEN: "${TURSO_AUTH_TOKEN:?}"
+      TDAI_STORE_LIBSQL_AUTH_TOKEN: "${TURSO_AUTH_TOKEN:-}"
       # ── L2/L3 마크다운 · JSONL · checkpoint · 생성이력 → S3 호환 ──
       TDAI_STORAGE_S3_ENDPOINT: "${S3_ENDPOINT:?}"
       TDAI_STORAGE_S3_REGION: "${S3_REGION:-ap-seoul-1}"
@@ -125,7 +126,8 @@ services:
     volumes:
       - proxy-conf:/app/conf:ro
       - proxy-data:/app/data
-    command: ["node", "--import", "tsx/esm", "src/index.ts", "--config", "/app/conf/config.yaml"]
+    # 번들 이미지라 tsx 가 필요 없다. Dockerfile 의 CMD 와 동일하지만 명시해둔다.
+    command: ["node", "/app/proxy.js", "--config", "/app/conf/config.yaml"]
     healthcheck:
       # 프록시는 인증이 걸린 라우트뿐이라 응답 코드가 아니라 "응답을 하는지" 로 본다
       test: ["CMD-SHELL", "curl -sS -o /dev/null --max-time 3 http://127.0.0.1:8096/ || exit 1"]
@@ -173,8 +175,10 @@ services:
     # Turso/S3 는 공인망이다. host 로 두면 wg0 바인딩 문제를 안 겪는다.
     network_mode: host
     environment:
+      # 자체 호스팅 sqld 는 인증 없이 127.0.0.1 바인딩으로 쓴다.
+      # 관리형 Turso 로 되돌리려면 .env 에 URL 과 토큰을 채우면 된다.
       TURSO_URL: ${TURSO_URL:?}
-      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:?}
+      TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN:-}
       S3_ENDPOINT: ${S3_ENDPOINT:?}
       S3_REGION: ${S3_REGION:-us-ashburn-1}
       S3_BUCKET: ${S3_BUCKET:?}
@@ -190,11 +194,38 @@ services:
       - ${BACKUP_DIR:-/var/backups/memory-stack}:/backup
     entrypoint: ["node", "/app/backup/snapshot.mjs"]
 
+  # 자체 호스팅 libSQL 서버. Turso 관리형 대신 쓴다.
+  #
+  # 왜 옮겼나: Turso 무료 플랜의 **읽기 쿼터**가 소진돼 SELECT 1 까지 막혔다
+  # (2026-08-28). 원인은 백업이 임베디드 리플리카로 DB 파일 전량(472MB)을
+  # 매일 읽은 것 — 그중 96%가 고아 인덱스가 남긴 빈 페이지였다.
+  # 자체 호스팅에는 쿼터가 없다. 프로토콜이 같아 이식 코드는 한 줄도 안 고친다.
+  #
+  # 127.0.0.1 에만 바인딩한다. core 가 host 네트워크라 그대로 닿는다.
+  sqld:
+    image: ghcr.io/tursodatabase/libsql-server:latest
+    container_name: ms-sqld
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      SQLD_NODE: primary
+      SQLD_HTTP_LISTEN_ADDR: 127.0.0.1:8081
+    volumes:
+      - sqld-data:/var/lib/sqld
+    healthcheck:
+      # 이미지에 curl/wget 이 없다. bash 의 /dev/tcp 로 HTTP 를 직접 친다.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q ' 200'"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
 networks:
   ms:
     driver: bridge
 
 volumes:
+  sqld-data:
   core-conf:       # 렌더링된 core config
   # core 데이터 볼륨 없음 — 무상태
   proxy-data:      # 세션 초기화 상태 (sqlite). 유실되면 세션 폼을 다시 탄다
