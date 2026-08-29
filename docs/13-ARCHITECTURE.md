@@ -3,7 +3,7 @@
 > 이 문서만 **현재 상태**를 기술한다. `00`~`12` 는 각 시점의 분석·판정 기록이라
 > 지금과 다를 수 있다. 어긋나면 이 문서가 맞다.
 >
-> 최종 갱신: 2026-08-28
+> 최종 갱신: 2026-08-30
 
 ## 한 줄
 
@@ -26,7 +26,7 @@
 GitHub                                            │
  CI(ubuntu-24.04-arm) → ghcr ────pull────────────►│
                                                   │
-                            Turso ────────────────┴──────── OCI Object Storage
+                                sqld(로컬) ────────┴──────── OCI Object Storage
 ```
 
 집에 남은 역할은 **HTTPS 종단 하나뿐**이다. 오버레이망(`10.77.0.4`)으로 직접
@@ -40,16 +40,43 @@ GitHub                                            │
 
 ---
 
+## 1-2. 왜 Turso 를 떠났나
+
+2026-08-28, Turso 무료 플랜의 **읽기 쿼터가 소진돼 `SELECT 1` 까지 BLOCKED** 됐다.
+회상·인증이 전부 500 이 되어 프록시 경유 채팅이 죽었다(쓰기는 살아있었다).
+
+원인은 백업이었다. 임베디드 리플리카 동기화가 DB 파일 전량(472MB)을 매일 읽는데,
+**그중 96%가 고아 인덱스가 남긴 빈 페이지**였다. 6회에 2.8GB.
+
+`ghcr.io/tursodatabase/libsql-server` 를 직접 띄워 옮겼다. 프로토콜이 같아
+**이식 코드는 한 줄도 고치지 않았다** — `TURSO_URL` 만 바꿨다. 사전 검증에서
+`F32_BLOB` · `libsql_vector_idx` · `vector_top_k` · `vector_distance_cos` · FTS5 ·
+`bm25()` · 트랜잭션이 전부 통과했다(sqlite 3.47.0).
+
+2026-08-30, DB 를 **논리 재구축**했다. 고아 DROP 이후 freelist 헤더가 어긋나
+`integrity_check` 가 경고를 냈고 파일이 472MB(실사용 18MB)였다. `VACUUM` 은
+`libsql_vector_meta_shadow` 를 중복시켜 못 쓴다(실측). 그래서 스키마와 행만
+새 파일에 심었다 — 테이블 → 데이터 → 인덱스 → FTS 순서.
+
+```
+472MB → 18MB · integrity ok · freelist 0
+백업   22.5초 58MB → 1.35초 6.1MB
+```
+
+대가: **oci-ko 가 단일 장애점**이 됐다. 예전엔 Turso 와 oci-ko 가 서로 독립이었다.
+
+---
+
 ## 2. 상태가 어디에 있나
 
 | 무엇 | 어디 | 비고 |
 |---|---|---|
-| L0 원본 대화 · L1 원자기억 | **Turso** | `F32_BLOB(1024)` 네이티브 벡터 + FTS5 |
-| 메타(팀·에이전트·유저·태스크) | **Turso** | |
-| 스킬 + 인덱스 | **Turso** | |
+| L0 원본 대화 · L1 원자기억 | **sqld** (자체 호스팅, named volume) | `F32_BLOB(1024)` 네이티브 벡터 + FTS5 |
+| 메타(팀·에이전트·유저·태스크) | **sqld** | |
+| 스킬 + 인덱스 | **sqld** | |
 | L2 시나리오 · L3 페르소나 (마크다운) | **OCI Object Storage** | `prod/profiles/…` |
 | 스킬 첨부 · JSONL | **OCI Object Storage** | `prod/skill_buffer/…` |
-| 로컬 | `manifest.json` 207바이트 | 컨테이너 재생성 시 재작성. 잃을 것 없음 |
+| 로컬 | `manifest.json` 207B · proxy 캐시 | 둘 다 재생성됨 |
 
 **로컬 SQLite 파일도 도커 볼륨도 쓰지 않는다.** 새 호스트에서 `.env` 만 채우면
 그대로 이어진다.
@@ -199,7 +226,7 @@ systemd   memory-stack.service        컨테이너 3개
 방화벽     8090/8420 → 홈랩 LAN + 오버레이만. 공인은 OCI 보안목록이 이중 차단
 ```
 
-백업은 Turso 를 임베디드 리플리카로 당겨 gz, S3 는 원본 경로 그대로 미러한다.
+백업은 sqld 를 임베디드 리플리카로 당겨 gz, S3 는 원본 경로 그대로 미러한다.
 `manifest.json` 에 `integrity_check`·행수·소요시간을 남긴다. 실패하면 반쪽
 스냅샷을 지우고 non-zero 로 죽는다.
 
@@ -229,12 +256,6 @@ upstream 에는 **아무것도 보내지 않는다.** `upstream` 리모트는 pu
 - `ollama` 와 `cliproxy` 가 compose 밖 — 스택이 두 갈래로 관리된다
 
 **위생**
-- Turso 파일이 **472MB 인데 실사용은 16.6MB** (빈 페이지 96%). 고아 인덱스
-  `m_l1_emb_shadow` 409MB 를 2026-08-28 에 제거했으나 **Turso 가 `VACUUM` 을
-  막아**(`SQL not allowed statement`) 파일은 안 줄었다. 백업도 gz 58MB 그대로다.
-  빈 페이지는 앞으로 재사용되므로 기능상 무해하다. 진짜 회수하려면 덤프 후
-  새 DB 로 이관해야 하는데, 백업 14벌이 812MB 이고 디스크 여유가 146GB 라
-  현재는 실익이 없다
 - S3 `prod/` 밖 테스트 잔해 114개
 - Mac 도커 볼륨 `tdai-memory-core-data`, oci-ko `*.unused` 8.6MB
 - `spike/` 694줄

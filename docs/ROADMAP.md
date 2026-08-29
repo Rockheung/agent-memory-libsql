@@ -20,7 +20,7 @@
    (헤더 주입)        └─────► memory-core :8420
 Claude Code ──► 훅 어댑터 ─────────────────────► memory-core :8420
                                                    │
-                                    L0/L1/메타/스킬 ├─► Turso (libSQL 네이티브 벡터)
+                                    L0/L1/메타/스킬 ├─► sqld (자체 호스팅 libSQL)
                                     L2/L3 마크다운  └─► Oracle Object Storage
 ```
 
