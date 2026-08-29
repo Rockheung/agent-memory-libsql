@@ -32,10 +32,13 @@ const manifest = { startedAt: new Date().toISOString(), snapshot: ts, turso: {},
 async function backupTurso() {
   const t0 = Date.now();
   const raw = join(dir, "turso.db");
+  // 자체 호스팅 sqld 는 인증 없이 127.0.0.1 바인딩으로 쓴다 — 토큰이 없다.
+  // 관리형 Turso 로 되돌리면 .env 에 토큰이 채워지고 아래가 그대로 붙는다.
+  const token = process.env.TURSO_AUTH_TOKEN || undefined;
   const c = createClient({
     url: "file:" + raw,
     syncUrl: need("TURSO_URL"),
-    authToken: need("TURSO_AUTH_TOKEN"),
+    ...(token ? { authToken: token } : {}),
   });
   await c.sync();
 

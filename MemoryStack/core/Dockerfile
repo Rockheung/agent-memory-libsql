@@ -50,7 +50,9 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl tini \
+ # ca-certificates: 네이티브 libsql 복제 계층(Rust)이 시스템 CA 저장소를 쓴다.
+ # 없으면 "TLS error: no valid native root CA certificates found" 로 죽는다.
+ && apt-get install -y --no-install-recommends curl tini ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # 번들에서 external 로 뺀 것 중 런타임에 실제로 필요한 유일한 패키지.
