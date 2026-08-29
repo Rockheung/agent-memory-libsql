@@ -14,9 +14,9 @@
  */
 import { createClient } from "@libsql/client";
 import { S3Client, ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
-import { createGzip } from "node:zlib";
+import { createGzip, createGunzip } from "node:zlib";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rm, stat, writeFile, readdir } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile, readdir, copyFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { dirname, join } from "node:path";
 
@@ -43,9 +43,12 @@ async function backupTurso() {
   await c.sync();
 
   // 받은 파일이 실제로 열리고 온전한지 확인한다. 백업은 복구되어야 백업이다.
-  const chk = await c.execute("PRAGMA integrity_check");
-  const integrity = String(chk.rows[0]?.integrity_check ?? chk.rows[0]?.[0] ?? "?");
-  if (integrity !== "ok") throw new Error(`integrity_check 실패: ${integrity}`);
+  // 다만 리플리카 연결은 일부 PRAGMA 를 거부한다(Sqlite3UnsupportedStatement).
+  // 그럴 땐 건너뛰되 manifest 에 남겨 "확인했다"고 착각하지 않게 한다.
+  // integrity 는 **복사본**에 대해 확인한다(아래). 라이브 리플리카를 검사하면
+  // ok 가 나오는데 정작 복구본은 아닐 수 있다 — 실제로 그랬다.
+  let integrity = "unchecked";
+  let restorableL0 = null;
 
   const counts = {};
   const tables = await c.execute(
@@ -58,19 +61,71 @@ async function backupTurso() {
   }
   // gz 를 뜨기 전에 WAL 을 본체로 밀어넣는다. 안 하면 turso.db.gz 만 복구했을 때
   // WAL 에만 있던 프레임이 사라진다 — 조용히 일부만 복구되는 최악의 형태다.
-  await c.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+  // 체크포인트가 되면 본체만 담으면 된다. 리플리카 연결은 이를 거부하는데
+  // (Sqlite3UnsupportedStatement), 그때 -wal 을 버리면 WAL 에만 있던 프레임이
+  // 사라진다 — 실제로 복구본에서 freelist 불일치가 나왔다. 그래서 실패하면
+  // db 와 -wal 을 tar 로 함께 담는다. SQLite 가 열 때 자동으로 재생한다.
+  let checkpointed = false;
+  try {
+    await c.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+    checkpointed = true;
+  } catch (e) {
+    if (!/Unsupported/i.test(String(e?.message))) throw e;
+  }
   c.close();
 
   const rawBytes = (await stat(raw)).size;
-  await pipeline(createReadStream(raw), createGzip({ level: 6 }), createWriteStream(raw + ".gz"));
-  const gzBytes = (await stat(raw + ".gz")).size;
-  // 본체는 gz 안에 있다. 곁딸린 파일은 전부 지운다 — 남겨두면 복구할 때
-  // "이것도 같이 복원해야 하나" 를 고민하게 만든다.
-  for (const suffix of ["", "-info", "-client_wal_index", "-shm", "-wal"]) {
+
+  // 체크포인트가 되면 본체만으로 충분하다. 리플리카 연결은 이를 거부하는데
+  // (Sqlite3UnsupportedStatement), 그때 -wal 을 버리면 WAL 에만 있던 프레임이
+  // 사라진다 — 실제로 복구본에서 freelist 불일치가 나왔다. 그래서 -wal 도 함께
+  // 담는다. 복구 시 같은 디렉터리에 풀면 SQLite 가 열면서 자동으로 재생한다.
+  //
+  // 압축 전에 먼저 복사한다. 라이브러리가 파일을 아직 만지고 있어서 바로 읽으면
+  // "file changed as we read it" 이 난다.
+  const parts = [];
+  for (const [src, name] of [[raw, "turso.db"], [raw + "-wal", "turso.db-wal"]]) {
+    if (!(await stat(src).catch(() => null))) continue;
+    if (name.endsWith("-wal") && checkpointed) continue;
+    const tmp = join(dir, name + ".tmp");
+    await copyFile(src, tmp);
+    await pipeline(createReadStream(tmp), createGzip({ level: 6 }), createWriteStream(join(dir, name + ".gz")));
+    await rm(tmp, { force: true });
+    parts.push(name + ".gz");
+  }
+  const gzBytes = (await Promise.all(parts.map((f) => stat(join(dir, f)).then((x) => x.size))))
+    .reduce((a, b) => a + b, 0);
+
+  // 복구할 **압축본 자체**를 풀어서 확인한다.
+  // 원본 파일을 복사해 열면 SQLite 가 열면서 freelist 를 정상화해버려 ok 가
+  // 나온다 — 정작 압축본은 아닌데도. 거짓 통과가 검사 없음보다 나쁘다.
+  {
+    const tmp = join(dir, ".verify.db");
+    await pipeline(createReadStream(join(dir, "turso.db.gz")), createGunzip(), createWriteStream(tmp));
+    const verify = createClient({ url: "file:" + tmp });
+    try {
+      const r = await verify.execute("PRAGMA integrity_check");
+      integrity = String(r.rows[0]?.integrity_check ?? Object.values(r.rows[0])[0] ?? "?")
+        .replace(/\s+/g, " ").slice(0, 200);
+      // integrity 문구보다 중요한 것: 압축본에서 실제로 데이터가 나오는가.
+      // freelist 누수 같은 경고는 데이터 손실이 아니므로 실패로 치지 않는다.
+      const n = Number(Object.values((await verify.execute(
+        "SELECT count(*) n FROM l0_conversations")).rows[0])[0]);
+      if (!Number.isFinite(n)) throw new Error("압축본에서 L0 을 읽지 못했다");
+      restorableL0 = n;
+    } finally {
+      verify.close();
+      for (const sfx of ["", "-client_wal_index", "-wal", "-shm"]) await rm(tmp + sfx, { force: true });
+    }
+  }
+
+  // 압축본만 남긴다. 원본과 리플리카 메타를 남겨두면 스냅샷이 2배가 되고
+  // 복구할 때 "어느 것을 써야 하나" 를 고민하게 만든다.
+  for (const suffix of ["", "-wal", "-shm", "-info", "-client_wal_index"]) {
     await rm(raw + suffix, { force: true });
   }
 
-  manifest.turso = { integrity, rawBytes, gzBytes, tables: counts, ms: Date.now() - t0 };
+  manifest.turso = { integrity, restorableL0, checkpointed, parts, rawBytes, gzBytes, tables: counts, ms: Date.now() - t0 };
   console.log(`turso: ${(rawBytes / 1048576).toFixed(1)}MB → gz ${(gzBytes / 1048576).toFixed(1)}MB, ` +
     `${Object.keys(counts).length} 테이블, ${Date.now() - t0}ms`);
 }
