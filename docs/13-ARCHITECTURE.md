@@ -230,6 +230,33 @@ systemd   memory-stack.service        컨테이너 3개
 `manifest.json` 에 `integrity_check`·행수·소요시간을 남긴다. 실패하면 반쪽
 스냅샷을 지우고 non-zero 로 죽는다.
 
+### 재부팅 검증 (2026-08-29)
+
+두 번 재부팅해 확인했다. **개입 없이 30초 안에 전부 복구된다.**
+
+```
+docker · docker.socket · cliproxy · ollama · memory-stack · backup.timer
+  → 전부 enabled + active
+컨테이너 4개 → 30초 내 healthy
+iptables 4규칙 영속 · 포트 6개 리스닝 · HTTPS 200 · 기억 붙는 채팅 정상
+```
+
+1차에서 **cliproxy 가 죽어 있었다.** `10.77.0.4` 는 wg0 주소인데 cliproxy 가
+`wg-quick@wg0` 보다 먼저 떠서, 바인딩 직후 인터페이스 재설정(mtu·route)에
+소켓을 잃고 **exit 0 으로 정상 종료**했다. 유닛이 `Restart=on-failure` 라
+재시작 대상이 아니었다. 드롭인으로 고쳤다:
+
+```ini
+# /etc/systemd/system/cliproxy.service.d/override.conf
+[Unit]
+After=wg-quick@wg0.service
+Wants=wg-quick@wg0.service
+[Service]
+Restart=always
+```
+
+2차 재부팅에서 `active` 확인. 이 유닛은 이 레포 밖(호스트 설정)이다.
+
 **복구는 실증했다** — gz 를 풀어 열고 무결성·행수·대화 본문·벡터까지 확인.
 
 ---
@@ -251,7 +278,6 @@ upstream 에는 **아무것도 보내지 않는다.** `upstream` 리모트는 pu
 ## 9. 알려진 빈틈
 
 **구조**
-- 재부팅 검증 미실시 (uptime 68일)
 - 집 의존이 NPM 하나 남음 — 집이 죽으면 도메인 접속 불가(오버레이 직결은 가능)
 - `ollama` 와 `cliproxy` 가 compose 밖 — 스택이 두 갈래로 관리된다
 
