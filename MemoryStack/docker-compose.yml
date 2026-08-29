@@ -153,6 +153,8 @@ services:
       SPACE_ID: ${SPACE_ID:-default}
       # /v1 을 붙이지 않은 베이스. 엣지가 $request_uri 를 그대로 이어붙인다.
       UPSTREAM_BASE: "${UPSTREAM_BASE:?UPSTREAM_BASE 를 .env 에 설정하세요}"
+      # /v1/models 를 cliproxy 로 직통시킬 때 쓰는 키. 위 location 블록 주석 참조.
+      PROXY_UPSTREAM_API_KEY: "${PROXY_UPSTREAM_API_KEY:?}"
       EDGE_PORT: "${EDGE_PORT:-8090}"
     volumes:
       - ./edge/default.conf.template:/etc/nginx/templates/default.conf.template:ro

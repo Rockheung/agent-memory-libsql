@@ -23,9 +23,19 @@ server {
     client_max_body_size 64m;
 
     # 모델 목록: memory-proxy 가 모르는 경로라 cliproxy 로 직접
+    # 모델 목록은 memory-proxy 가 처리하지 않으므로(404) cliproxy 로 직통한다.
+    # 그런데 클라이언트가 들고 오는 것은 **메모리 키**라 cliproxy 가 거부한다.
+    # 목록을 못 받은 클라이언트는 기본 모델명(gpt-4o 등)으로 떨어지고, 그건
+    # "unknown provider for model" 이 되어 "No output generated" 로 보인다.
+    # 그래서 이 경로만 upstream 키로 갈아끼운다.
     location = /v1/models {
+        # 헤더를 무조건 덮어쓰면 키 없이도 목록이 나간다. 최소한 뭔가는 들고
+        # 오게 한다. ⚠️ 값을 검증하지는 않는다 — 진짜 검증은 core 의
+        # /v3/meta/auth/verify 를 auth_request 로 부르는 것인데 POST 본문이
+        # 필요해 nginx 만으로는 안 된다. 목록은 모델명뿐이라 여기서 멈춘다.
+        if ($http_authorization = "") { return 401; }
         proxy_pass ${UPSTREAM_BASE}/v1/models;
-        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Authorization "Bearer ${PROXY_UPSTREAM_API_KEY}";
     }
 
     # 나머지 전부 memory-proxy 로. 경로 앞에 /{agent-source}/{spaceId} 를 붙인다.
