@@ -1,7 +1,7 @@
 // S3StorageBackend 를 실제 Oracle Object Storage 에 대해 검증한다.
 // LocalStorageBackend 와 동작이 일치해야 하는 지점을 중심으로 본다.
 import { readFileSync } from "node:fs";
-import { S3StorageBackend } from "./t/s3-backend.mjs";
+import { S3StorageBackend } from "./s3-backend.js";
 const e = Object.fromEntries(readFileSync(process.env.HOME+"/.config/oci-s3.env","utf8")
   .split("\n").filter(Boolean).map(l=>{const i=l.indexOf("=");return [l.slice(0,i),l.slice(i+1)];}));
 

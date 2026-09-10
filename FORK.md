@@ -76,7 +76,8 @@ upstream 은 **스쿼시된 릴리스 드롭**으로 코드를 떨군다 (`feat:
    | `metadata/store/interface.ts` | `MetadataBackend` 유니온 | +1/-1 |
    | `metadata/store/factory.ts` | `case "libsql"` + env 추론 | +56/-3 |
    | `utils/pipeline-factory.ts` | `createStoreBundle` 에 await | +1/-1 |
-   | `utils/manifest.ts` | `"libsql"` 타입 + diff 분기 | (본 커밋) |
+   | `utils/manifest.ts` | `"libsql"` 타입 + diff 분기 | +26/-2 |
+   | `core/skill/skill-config.ts` | 유니온 리터럴에 `"libsql"` (2026-09-11 병합에서 추가) | +1/-1 |
 
    **새 수정 지점을 늘려야 하면 먼저 멈추고, 그게 정말 후크인지 따진다.**
    후크가 아닌 곳(로직 본문)을 고쳐야 한다면 upstream 에 seam Issue 를 먼저 던진다
@@ -140,28 +141,92 @@ upstream 은 최근 20 커밋 중 **실제 코드 드롭이 3 번**이고 전부
 **덩치 큰 둘(`gateway/server.ts`, `tdai-core.ts`)이 매 드롭 피격 파일에 있다.**
 리베이스 시 여기부터 본다.
 
-### 리베이스 절차
+### 업스트림 동기화 절차 (2026-09-11 개정 — 1회 실측 반영)
+
+**rebase 가 아니라 merge 로 한다.** 이 포크는 upstream 에 아무것도 보내지
+않으므로(위 "이 포크가 뭘 하는 것인가") 우리 커밋 50개를 하나씩 재적용해 같은
+충돌을 여러 번 만날 이유가 없다. 초판에 적혀 있던 `git rebase feat/server_team`
+은 폐기한다.
+
+```bash
+git fetch upstream
+git checkout feat/server_team && git merge --ff-only upstream/feat/server_team
+git checkout -b try/upstream-merge-YYYY-MM rock/main
+git merge --no-commit --no-ff feat/server_team
+```
 
 진짜 방어선은 패치가 아니라 **이식이 살아있는지 증명하는 테스트**다.
-`git rebase feat/server_team` 후 반드시 아래를 통과시킨다.
+아래를 순서대로 통과시킨다. 앞의 둘은 로컬에서, 뒤의 넷은 격리된 백엔드에서.
 
 ```bash
 cd MemoryCore
-npx vitest run src/metadata/store/                    # 계약 96 (sqlite 48 + libsql 48). 격리됨
+npx tsdown                                            # 빌드. 임포트가 죽으면 여기서 걸린다
+npx vitest run src/metadata/store/                    # 계약 116 (sqlite 58 + libsql 58). :memory: 라 안전
+```
+
+**타입체크는 절대값이 아니라 기준선과의 차이로 본다.** upstream 트리는
+strict tsconfig 에서 원래 200건 넘게 난다(그쪽은 tsconfig 를 두지 않는다).
+병합 전 커밋에 같은 설정으로 돌려 에러 집합을 비교하고, **포크 파일에 새
+에러가 0 인지**만 본다. 2026-09-11 병합 실측: 기준선 232 → 221, 새로 생긴 21건은
+전부 upstream 자기 코드.
+
+나머지 넷은 실제 libSQL·S3 를 친다. **운영 sqld 를 절대 쓰지 말 것** —
+`__skill-gateway.e2e.ts` 는 시작할 때 19개 테이블에 `DELETE FROM` 을 친다.
+임시 인스턴스를 띄워서 쓴다(oci-ko 기준):
+
+```bash
+docker run -d --name ms-sqld-e2e -p 127.0.0.1:8082:8082 \
+  -e SQLD_NODE=primary -e SQLD_HTTP_LISTEN_ADDR=0.0.0.0:8082 \
+  -v sqld-e2e:/var/lib/sqld ghcr.io/tursodatabase/libsql-server:latest
+# --network host 로 띄우면 gRPC 5001 이 운영 sqld 와 충돌한다. 브리지로 둘 것.
+
+printf 'TURSO_DATABASE_URL=http://127.0.0.1:8082\nTURSO_AUTH_TOKEN=\n' > ~/.config/turso.env
+grep -E '^S3_(ENDPOINT|REGION|BUCKET|ACCESS_KEY_ID|SECRET_ACCESS_KEY)=' \
+  ~/memory-fork/MemoryStack/.env > ~/.config/oci-s3.env   # 끝나면 지울 것
+
+export TDAI_METADATA_LIBSQL_URL=http://127.0.0.1:8082 TDAI_METADATA_LIBSQL_AUTH_TOKEN=
+export TDAI_STORE_LIBSQL_URL=http://127.0.0.1:8082 TDAI_STORE_LIBSQL_AUTH_TOKEN=
+export LLM_BASE_URL=... LLM_API_KEY=...        # MemoryStack/.env 의 PROXY_UPSTREAM_*
+
 npx tsx src/core/store/__libsql-store.e2e.ts          # 메모리 스토어 7
 npx tsx src/core/skill/__libsql-skill-store.e2e.ts    # 스킬 스토어 10
 npx tsx src/core/skill/__skill-gateway.e2e.ts         # 스킬 HTTP 5
-node   src/core/storage/__s3-backend.itest.mjs        # S3 백엔드 16
+npx tsx src/core/storage/__s3-backend.itest.ts        # S3 백엔드 16 (버킷의 itest/ 프리픽스만 씀)
 ```
 
 `__` 접두사라 vitest include 에 안 걸린다 — 위처럼 직접 실행해야 한다.
-계약 테스트만 `:memory:` 라 안전하고, **나머지 4개는 자격증명 파일
-(`~/.config/turso.env`, `~/.config/oci-s3.env`)을 읽어 실제 운영 Turso/S3 를
-친다.** 삭제는 하지 않지만 테스트 레코드가 남는다. 운영 데이터가 신경 쓰이면
-Turso 브랜치를 하나 파서 URL 만 바꿔 돌릴 것.
+`npm install` 이 `edgesOut` 널참조로 죽으면 npm 10 의 peer 해석 버그다.
+`--legacy-peer-deps` 를 붙인다.
 
 하나라도 깨지면 그 드롭은 **이식이 깨진 것**이지 충돌 해소 실패가 아니다.
 docs/09·11 의 함정(트랜잭션 핸들, WHERE 없는 DELETE)을 다시 읽을 것.
+
+### 충돌 개수를 일정 산정에 쓰지 말 것
+
+2026-09-11 병합에서 배운 것. `git merge-tree` 로 미리 잰 충돌은 7파일 · 16곳 ·
+193줄이었고 그 예측은 정확했다. **그런데 실제 작업의 대부분은 충돌이 아니라
+충돌 없이 자동 병합된 파일에서 나왔다.**
+
+| 조용히 깨진 것 | 무엇이 잡았나 |
+|---|---|
+| `libsql-skill-store.ts` 임포트 — upstream 이 `store/sqlite.ts` 를 디렉터리로 쪼개고 `buildFtsQuery`/`tokenizeForFts` 를 `tokenize.ts` 로 옮김 | `npx tsdown` (빌드 실패) |
+| `LibsqlMetadataStore` 에 `InstanceUpstreamConfig` 4메서드 누락 | 계약 테스트 10건 실패 |
+| `StoreCapabilities.profileRows` 가 required 로 승격 | 타입체크 기준선 비교 |
+| `listAgentFixedAssets` 의 `assetTypes` 필터를 무시 | **아무것도 못 잡았다.** 선택 인자라 타입에러도 없고 계약 테스트도 없다. 인터페이스 diff 를 눈으로 읽어서 발견 |
+
+마지막 줄이 중요하다. 병합 후에는 **세 인터페이스(`IMemoryStore`,
+`IMetadataStore`, `IStorageBackend`)의 diff 를 직접 읽는다.** 새로 생긴 멤버가
+optional 이면 도구가 알려주지 않는다.
+
+```bash
+git diff <이전미러>..upstream/feat/server_team -- \
+  MemoryCore/src/core/store/types.ts \
+  MemoryCore/src/metadata/store/interface.ts \
+  MemoryCore/src/core/storage/types.ts
+```
+
+upstream 이 세 seam 에 대한 계약 하네스(`__contract__/*.contract.ts`, 796줄)를
+넣었다. 우리 구현을 거기에 꽂으면 이 수작업이 줄어든다 — 아직 안 했다.
 
 ## 라이선스
 

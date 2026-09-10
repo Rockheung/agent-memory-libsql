@@ -29,7 +29,7 @@ const cfg = loadGatewayConfig({
 } as any);
 (cfg.memory as any).storeBackend="libsql";
 (cfg.memory as any).libsql={url:process.env.TDAI_STORE_LIBSQL_URL,authToken:process.env.TDAI_STORE_LIBSQL_AUTH_TOKEN};
-(cfg.memory as any).embedding={enabled:true,provider:"openai",baseUrl:"http://192.168.88.223:11434/v1",
+(cfg.memory as any).embedding={enabled:true,provider:"openai",baseUrl:"http://127.0.0.1:11434/v1",
   apiKey:"ollama",model:"bge-m3",dimensions:1024,sendDimensions:false,timeoutMs:30000,
   maxInputChars:5000,conflictRecallTopK:5,recallTimeoutMs:15000};
 // ★ Skill 활성
