@@ -39,6 +39,11 @@ Claude Code 는 "훅이 없는 호스트"가 아니다. upstream 이 어댑터�
   사용자 대기 시간에서 쓰기를 완전히 제거하고 순서도 보장된다.
 - **transcript 를 파싱하지 않는다.** `Stop` 이 `last_assistant_message` 를
   직접 준다 (훅 문서 권고 — transcript 는 지연된다).
+- **세션 state 는 TTL 로 청소한다.** 세션마다 `~/.claude/memory-adapter/<sid>.json`
+  이 하나 생기고 지워지지 않아 무한정 쌓였다(실측: book 에 15개, 최고령 26일).
+  `state_ttl_days`(기본 7, 0 이면 비활성) 가 지난 `.json` 만 지운다 — `adapter.log`
+  는 건드리지 않는다. 훅은 매 턴 두 번 도니 `.last-sweep` 스탬프로 하루 한 번만
+  돌고, 이벤트 처리가 **끝난 뒤에** 돌아 사용자 대기 시간에 들어가지 않는다.
 - **L3/L2 는 세션당 1회만 주입.** 매 턴 넣으면 토큰 낭비 + 프롬프트 캐시 무효화.
   L1 은 질의 기반이라 매 턴 수행.
 - **표준 라이브러리만.** pip 설치 없음.
@@ -80,6 +85,7 @@ $EDITOR ~/.claude/memory-adapter.json     # endpoint / user_key / team·agent·u
 ```bash
 tail -f ~/.claude/memory-adapter/adapter.log      # 호출별 latency / 실패 사유
 ls    ~/.claude/memory-adapter/                   # 세션별 state (stash·주입 여부)
+                                                 # .last-sweep = 마지막 TTL 청소 시각
 ./selftest.sh                                     # 게이트웨이 없이/있이 동작 확인
 ```
 

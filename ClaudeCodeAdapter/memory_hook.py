@@ -123,6 +123,47 @@ def write_state(sid: str, st: dict) -> None:
         log(f"state write failed: {e}")
 
 
+def sweep_state(cfg: dict) -> None:
+    """오래된 세션 state 파일을 지운다.
+
+    세션마다 파일이 하나씩 생기고 지워지지 않아 무한정 쌓인다. TTL 이 지난
+    것만 지운다 — `adapter.log` 와 확장자가 .json 이 아닌 것은 건드리지 않는다.
+
+    훅은 매 턴 두 번 돈다. 그때마다 디렉터리를 훑으면 낭비이므로 스탬프
+    파일로 하루 한 번만 돌게 한다. 어떤 실패도 삼킨다 — 청소가 턴을 깨면 안 된다.
+    """
+    days = cfg.get("state_ttl_days", 7)
+    if not days or days <= 0:          # 0 / null 이면 청소하지 않는다
+        return
+    try:
+        stamp = os.path.join(STATE_DIR, ".last-sweep")
+        now = time.time()
+        try:
+            if now - os.path.getmtime(stamp) < 86400:
+                return
+        except OSError:
+            pass                        # 스탬프가 없으면 이번에 돈다
+        with open(stamp, "w") as f:
+            f.write(str(int(now)))
+
+        cutoff = now - days * 86400
+        removed = 0
+        for name in os.listdir(STATE_DIR):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(STATE_DIR, name)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.unlink(path)
+                    removed += 1
+            except OSError:
+                pass
+        if removed:
+            log(f"sweep: {removed}개 삭제 (TTL {days}일)")
+    except Exception as e:
+        log(f"sweep failed: {e}")
+
+
 def emit(event: str, context: str | None) -> None:
     """훅 출력. context 가 없으면 아무것도 내보내지 않는다."""
     if context:
@@ -268,6 +309,10 @@ def main() -> None:
             on_stop(cfg, hook)
     except Exception as e:  # 어떤 예외도 턴을 깨지 않는다
         log(f"unhandled {event}: {type(e).__name__}: {e}")
+
+    # 이벤트 처리가 끝난 뒤에 돈다. Stop 훅에서만 해도 되지만, -p 루프처럼
+    # Stop 이 안 오는 경로가 있어 양쪽에서 부르고 스탬프로 빈도를 막는다.
+    sweep_state(cfg)
     sys.exit(0)
 
 
