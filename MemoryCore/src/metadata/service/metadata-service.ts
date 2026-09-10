@@ -21,7 +21,7 @@ import {
   type PermCheckLogger,
 } from "./permission-checker.js";
 import {
-  maskUserKey, isUserKeyExpired, DEFAULT_MAX_ACTIVE_USER_KEYS,
+  maskUserKey, maskKeyValue, isUserKeyExpired, DEFAULT_MAX_ACTIVE_USER_KEYS,
 } from "../utils/user-key.js";
 import {
   lookupMemorySystemUser,
@@ -86,6 +86,10 @@ import type {
   PaginationParams,
   InstanceUserListFilter,
   UserListFilter,
+  InstanceUpstreamConfigEntity,
+  UpsertInstanceUpstreamConfigInput,
+  InstanceUpstreamConfigFilter,
+  UpstreamConfigType,
 } from "../types.js";
 import { formatListResult, paginateArray, resolvePagination, wrapPaginated, DEFAULT_PAGINATION } from "../pagination.js";
 import { generateId, ID_PREFIX } from "../utils/id-generator.js";
@@ -181,6 +185,8 @@ export interface ListWithDetailParams {
   touch_usage?: boolean;
   limit?: number;
   offset?: number;
+  /** 可选类型过滤：只返回列表中匹配的 asset_type；省略 / 空数组 = 不过滤。 */
+  asset_types?: Array<"skill" | "llm_wiki" | "code_graph" | "chat_memory">;
 }
 
 export interface AgentFixedAssetDetailResult {
@@ -439,6 +445,12 @@ export class MetadataService {
   async createNormalUserWithKey(input: {
     username: string;
     user_key: string;
+    /** 外部认证建号时传（如 WOA 工号），用于下次登录判断是否初次。 */
+    external_id?: string;
+    /** 外部认证体系标识（如 woa）；与 external_id 同域，缺省回落 local。 */
+    auth_provider?: string;
+    display_name?: string;
+    email?: string;
   }): Promise<CreateUserApiResult> {
     const existing = await this.store.getUserByKey(input.user_key);
     if (existing) {
@@ -446,7 +458,14 @@ export class MetadataService {
     }
     try {
       return await this.createUserWithType(
-        { username: input.username, default_key_value: input.user_key },
+        {
+          username: input.username,
+          default_key_value: input.user_key,
+          external_id: input.external_id,
+          auth_provider: input.auth_provider,
+          display_name: input.display_name,
+          email: input.email,
+        },
         "normal",
       );
     } catch (err) {
@@ -461,8 +480,11 @@ export class MetadataService {
   private resolveCreateUserInput(
     input: CreateUserInput,
   ): CreateUserInput & { auth_provider: string; external_id: string } {
-    const authProvider = input.auth_provider?.trim() || DEFAULT_AUTH_PROVIDER;
+    // 显式带 external_id = 外部认证建号：即使调用方省略 auth_provider，也要落
+    // 到外部域，与 find-by-external 的读取同域。
+    // 否则会"写进 local 域、按外部域查"，下次登录被误判为初次。
     const externalId = input.external_id?.trim();
+    const authProvider = input.auth_provider?.trim() || DEFAULT_AUTH_PROVIDER;
     if (externalId) {
       return { ...input, auth_provider: authProvider, external_id: externalId };
     }
@@ -508,6 +530,69 @@ export class MetadataService {
 
   async getUserByExternalId(authProvider: string, externalId: string): Promise<UserEntity | null> {
     return this.store.getUserByExternalId(authProvider, externalId);
+  }
+
+  /**
+   * 外部认证（如 WOA）登录后判断是否初次：按 (auth_provider, external_id) 反查 user。
+   *
+   * 复用 core 既有的 meta_users.external_id 字段（origin 引入，原为太湖 OAuth2 的
+   * sub/工号而设，语义与本需求一致），不新建关联表。
+   *
+   * 注意：未绑定外部身份的账号，其 external_id 由 resolveCreateUserInput 兜底填
+   * user_id（`usr-xxx`），与工号格式不同，因此不会误命中。
+   */
+  async findUserByExternalId(
+    externalId: string,
+    authProvider?: string,
+  ): Promise<UserEntity | null> {
+    const provider = authProvider?.trim() || DEFAULT_AUTH_PROVIDER;
+    return this.store.getUserByExternalId(provider, externalId);
+  }
+
+  /**
+   * 把外部认证唯一标识绑定到**已有**账号（存量账号接入外部认证）。
+   *
+   * 只写 external_id，**不改 auth_provider**——存量账号原本用 user_key 登录，
+   * 绑定后仍可用原 user_key 登录，外部认证只是新增一种入口。
+   *
+   * 冲突：该 external_id 已绑到**另一个** user 时抛错，避免一个外部身份对应多个账号。
+   * 幂等：重复绑定同一个 external_id 到同一 user 直接返回。
+   */
+  async bindExternalIdToUser(
+    userId: string,
+    externalId: string,
+    authProvider?: string,
+    displayName?: string,
+  ): Promise<UserEntity> {
+    const provider = authProvider?.trim() || DEFAULT_AUTH_PROVIDER;
+    // 先确认目标账号存在，避免把外部身份绑到不存在的 user 上。
+    const user = await this.requireUser(userId);
+
+    const existing = await this.store.getUserByExternalId(provider, externalId);
+    if (existing && existing.user_id !== userId) {
+      throw new MetadataError(
+        "external_id_already_bound",
+        `external_id is already bound to another user: ${existing.user_id}`,
+      );
+    }
+
+    // 绑定前先摘掉"未绑定占位 external_id"（= user_id）可能带来的误撞：
+    // 目标账号若正持有占位值，而待绑的 external_id 恰好等于它（极端场景），
+    // 上面的 existing 判定会被自己命中而提前返回，故统一走一次写入。
+    const patch: Partial<UserEntity> = {
+      external_id: externalId,
+      auth_provider: provider,
+    };
+    // 展示名只在"有值且目标账号当前为空"时补写：
+    // 不覆盖人工改过的名字，也不把 IdP 的空值写进去把已有名字抹掉。
+    const incomingName = displayName?.trim();
+    if (incomingName && !user.display_name) patch.display_name = incomingName;
+
+    if (existing && existing.user_id === userId && !patch.display_name) return user;
+
+    const updated = await this.store.updateUser(userId, patch);
+    if (!updated) throw new MetadataError("user_not_found", `user not found: ${userId}`);
+    return updated;
   }
 
   async deleteUsersForCaller(userIds: string[], ctx: V3AuthContext): Promise<BatchDeleteResult> {
@@ -823,36 +908,6 @@ export class MetadataService {
 
     // 核心操作：将用户加入 Team
     const result = await this.store.addTeamMember({ ...input, role: reqRole });
-
-    // 辅助操作：自动创建默认 Agent（失败不阻塞，已有则跳过）
-    try {
-      const user = await this.getUserById(input.user_id);
-      const agentName = user?.username
-        ? `${DEFAULT_AGENT_NAME}-${user.username}`
-        : DEFAULT_AGENT_NAME;
-      const agents = await this.store.listAgentsByTeam(input.team_id, null, {
-        owner_user_id: input.user_id,
-        name: agentName,
-        status: "active",
-      });
-      if (agents.items.length === 0) {
-        await this.createAgent({
-          team_id: input.team_id,
-          owner_user_id: input.user_id,
-          name: agentName,
-          description: DEFAULT_AGENT_DESCRIPTION,
-          prompt: DEFAULT_AGENT_PROMPT,
-          metadata_json: DEFAULT_AGENT_METADATA_JSON,
-          visibility: "team",
-          status: "active",
-        });
-      }
-    } catch (err) {
-      console.warn(
-        `[addTeamMember] 默认 Agent 创建失败，已跳过 (user=${input.user_id} team=${input.team_id})`,
-        err instanceof Error ? err.message : err,
-      );
-    }
 
     return result;
   }
@@ -1454,7 +1509,10 @@ export class MetadataService {
     if (!agent) throw new MetadataError("agent_not_found", `agent not found: ${params.agent_id}`);
 
     const pagination = this.pag(params);
-    const bindingPage = await this.store.listAgentFixedAssets(params.agent_id, pagination);
+    const assetTypes = params.asset_types && params.asset_types.length > 0
+      ? params.asset_types
+      : undefined;
+    const bindingPage = await this.store.listAgentFixedAssets(params.agent_id, pagination, { assetTypes });
     const items: AgentAssetView[] = [];
 
     for (const b of bindingPage.items) {
@@ -1684,6 +1742,20 @@ export class MetadataService {
     return agent;
   }
 
+  /**
+   * agent 固定资产写操作的权限：owner 本人，或该 agent 所属团队的 team admin。
+   * 用于冷启动「admin 代新用户挂载默认 Agent 资产」等场景（参照 asset 的
+   * assertCallerIsAssetOwnerOrTeamAdmin 先例，放通 team admin）。
+   */
+  private async assertCallerIsAgentOwnerOrTeamAdmin(ctx: V3AuthContext, agentId: string): Promise<AgentEntity> {
+    const agent = await this.getAgentById(agentId);
+    if (!agent) throw new MetadataError("agent_not_found", `agent not found: ${agentId}`);
+    const callerId = this.requireCallerId(ctx);
+    if (agent.owner_user_id === callerId) return agent;
+    await this.assertCallerIsTeamAdmin(ctx, agent.team_id);
+    return agent;
+  }
+
   private async assertCallerIsTaskCreator(ctx: V3AuthContext, taskId: string): Promise<TaskEntity> {
     const task = await this.getTaskById(taskId);
     if (!task) throw new MetadataError("task_not_found", `task not found: ${taskId}`);
@@ -1777,7 +1849,11 @@ export class MetadataService {
   async createAgentForCaller(input: CreateAgentInput, ctx: V3AuthContext): Promise<AgentEntity> {
     await this.assertTeamExists(input.team_id);
     await this.requireActiveTeamMember(ctx, input.team_id);
-    this.assertCallerIsResourceOwner(ctx, input.owner_user_id);
+    // owner 本人，或该 team 的 team admin（admin 代新用户创建默认 Agent）
+    const callerId = this.requireCallerId(ctx);
+    if (input.owner_user_id !== callerId) {
+      await this.assertCallerIsTeamAdmin(ctx, input.team_id);
+    }
     return this.createAgent(input);
   }
 
@@ -1969,7 +2045,7 @@ export class MetadataService {
     bindings: FixedAssetBindingInput[],
     ctx: V3AuthContext,
   ): Promise<void> {
-    await this.assertCallerIsAgentOwner(ctx, agentId);
+    await this.assertCallerIsAgentOwnerOrTeamAdmin(ctx, agentId);
     return this.setAgentFixedAssets(agentId, bindings);
   }
 
@@ -1996,5 +2072,129 @@ export class MetadataService {
   ): Promise<PaginatedResult<AclEntity>> {
     await this.assertCallerIsAssetOwnerOrTeamAdmin(ctx, assetId);
     return this.listAclByAsset(assetId, pagination);
+  }
+
+  // ── InstanceUpstreamConfig ──────────────────────────────────────────────
+
+  /**
+   * 查询单条实例上游配置。
+   * type=conversation 且不存在时自动插入一条 mode=official 的默认行。
+   */
+  async getInstanceUpstreamConfig(
+    agentSource: string,
+    type: UpstreamConfigType,
+  ): Promise<Record<string, unknown>> {
+    let entity = await this.store.getInstanceUpstreamConfig(agentSource, type);
+    if (!entity && type === "conversation") {
+      entity = await this.store.upsertInstanceUpstreamConfig({
+        agent_source: agentSource,
+        type: "conversation",
+        mode: "official",
+      });
+    }
+    if (!entity) {
+      return {
+        agent_source: agentSource,
+        type,
+        mode: "official",
+        base_url: "",
+        api_key_masked: "",
+        model_id: "",
+        description: "",
+        updated_at: null,
+      };
+    }
+    return this.toPublicInstanceUpstreamConfig(entity);
+  }
+
+  /**
+   * 写入/覆盖实例上游配置。
+   * 校验：
+   *   - mode != official → base_url 必填
+   *   - mode == custom_unified → api_key 必填
+   *   - type == extraction → mode 不允许 custom_passthrough
+   */
+  async setInstanceUpstreamConfig(
+    input: UpsertInstanceUpstreamConfigInput,
+  ): Promise<Record<string, unknown>> {
+    const mode = input.mode;
+    const type = input.type ?? "conversation";
+    if (type === "extraction" && mode === "custom_passthrough") {
+      throw new MetadataError(
+        "invalid_input",
+        "extraction type does not support custom_passthrough mode",
+      );
+    }
+    if (mode !== "official" && !input.base_url?.trim()) {
+      throw new MetadataError(
+        "invalid_input",
+        "base_url is required when mode is custom_unified or custom_passthrough",
+      );
+    }
+    if (mode === "custom_unified" && !input.api_key?.trim()) {
+      throw new MetadataError(
+        "invalid_input",
+        "api_key is required when mode is custom_unified",
+      );
+    }
+    const entity = await this.store.upsertInstanceUpstreamConfig(input);
+    return this.toPublicInstanceUpstreamConfig(entity);
+  }
+
+  /** 全量列出实例上游配置（脱敏）。 */
+  async listInstanceUpstreamConfigs(
+    filter?: InstanceUpstreamConfigFilter,
+  ): Promise<{ items: Record<string, unknown>[] }> {
+    const entities = await this.store.listInstanceUpstreamConfigs(filter);
+    return { items: entities.map((e) => this.toPublicInstanceUpstreamConfig(e)) };
+  }
+
+  /** 全量列出实例上游配置（内部，不脱敏）。 */
+  async listInstanceUpstreamConfigsInternal(
+    filter?: InstanceUpstreamConfigFilter,
+  ): Promise<{ items: InstanceUpstreamConfigEntity[] }> {
+    const entities = await this.store.listInstanceUpstreamConfigs(filter);
+    return { items: entities };
+  }
+
+  /**
+   * 重置实例上游配置。
+   * conversation: 重置为 official（保留行）；extraction: 删除行。
+   */
+  async resetInstanceUpstreamConfig(
+    agentSource: string,
+    type: UpstreamConfigType,
+  ): Promise<{ reset: boolean }> {
+    if (type === "conversation") {
+      await this.store.upsertInstanceUpstreamConfig({
+        agent_source: agentSource,
+        type: "conversation",
+        mode: "official",
+        base_url: "",
+        api_key: "",
+        model_id: "",
+        description: "",
+      });
+      return { reset: true };
+    }
+    const deleted = await this.store.deleteInstanceUpstreamConfig(agentSource, type);
+    return { reset: deleted };
+  }
+
+  /** api_key 脱敏输出。 */
+  private toPublicInstanceUpstreamConfig(
+    entity: InstanceUpstreamConfigEntity,
+  ): Record<string, unknown> {
+    return {
+      agent_source: entity.agent_source,
+      type: entity.type,
+      mode: entity.mode,
+      base_url: entity.base_url,
+      api_key_masked: entity.api_key ? maskKeyValue(entity.api_key) : "",
+      model_id: entity.model_id,
+      description: entity.description,
+      created_at: entity.created_at,
+      updated_at: entity.updated_at,
+    };
   }
 }

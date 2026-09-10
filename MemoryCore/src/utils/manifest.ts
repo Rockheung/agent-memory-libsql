@@ -30,7 +30,7 @@ import path from "node:path";
 // ============================
 
 export interface ManifestStoreInfo {
-  type: "sqlite" | "libsql" | "tcvdb";
+  type: "sqlite" | "libsql" | "tcvdb" | "mongodb";
   sqlite?: {
     /** Relative path to the SQLite DB file (relative to dataDir). */
     path: string;
@@ -44,6 +44,10 @@ export interface ManifestStoreInfo {
     database: string;
     /** User-friendly alias (optional). */
     alias?: string;
+  };
+  mongodb?: {
+    endpoint: string;
+    database: string;
   };
 }
 
@@ -115,13 +119,15 @@ export function writeManifest(dataDir: string, manifest: Manifest): void {
 // ============================
 
 export interface StoreConfigSnapshot {
-  type: "sqlite" | "libsql" | "tcvdb";
+  type: "sqlite" | "libsql" | "tcvdb" | "mongodb";
   sqlitePath?: string;
   /** libSQL/Turso 접속 URL (type="libsql"). 토큰은 담지 않는다. */
   libsqlUrl?: string;
   tcvdbUrl?: string;
   tcvdbDatabase?: string;
   tcvdbAlias?: string;
+  mongoEndpoint?: string;
+  mongoDatabase?: string;
 }
 
 /**
@@ -133,6 +139,11 @@ export function buildStoreInfo(snapshot: StoreConfigSnapshot): ManifestStoreInfo
     info.sqlite = { path: snapshot.sqlitePath ?? "vectors.db" };
   } else if (snapshot.type === "libsql") {
     info.libsql = { url: snapshot.libsqlUrl ?? "" };
+  } else if (snapshot.type === "mongodb") {
+    info.mongodb = {
+      endpoint: snapshot.mongoEndpoint!,
+      database: snapshot.mongoDatabase!,
+    };
   } else {
     info.tcvdb = {
       url: snapshot.tcvdbUrl!,
@@ -176,6 +187,15 @@ export function diffStoreBinding(
     }
     if (persisted.tcvdb?.database !== current.tcvdb?.database) {
       diffs.push(`tcvdb database changed: ${persisted.tcvdb?.database} → ${current.tcvdb?.database}`);
+    }
+  }
+
+  if (persisted.type === "mongodb" && current.type === "mongodb") {
+    if (persisted.mongodb?.endpoint !== current.mongodb?.endpoint) {
+      diffs.push(`mongodb endpoint changed: ${persisted.mongodb?.endpoint} → ${current.mongodb?.endpoint}`);
+    }
+    if (persisted.mongodb?.database !== current.mongodb?.database) {
+      diffs.push(`mongodb database changed: ${persisted.mongodb?.database} → ${current.mongodb?.database}`);
     }
   }
 

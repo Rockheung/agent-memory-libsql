@@ -632,6 +632,7 @@ export class TdaiCore {
     model: string;
     maxTokens: number;
     timeoutMs: number;
+    stream: boolean;
   } {
     const resolved = resolveStandaloneLlmForRuntime(this.cfg.llm, this.instanceId);
     return {
@@ -640,6 +641,7 @@ export class TdaiCore {
       model: resolved.model,
       maxTokens: resolved.maxTokens ?? 4096,
       timeoutMs: resolved.timeoutMs ?? 120_000,
+      stream: resolved.stream ?? false,
     };
   }
 
@@ -1027,6 +1029,7 @@ export class TdaiCore {
         model: runtimeLlm.model,
         maxTokens: runtimeLlm.maxTokens,
         timeoutMs: runtimeLlm.timeoutMs,
+        stream: runtimeLlm.stream,
       },
       // Default to enabled so the runner doesn't strip caller-provided tools.
       enableTools: true,

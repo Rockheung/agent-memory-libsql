@@ -27,12 +27,18 @@ import {
   resolveForwardTarget,
   resolveSessionKey,
   resolveLatestUserQuery,
+  reportAnalyzerTrace,
   type ForwardTarget,
 } from "./guard-adapter.js";
 import { hasCostGuardMarker, matchWhitelistEndpoint } from "./routes/whitelist.js";
 import { writeRequestLog } from "./requestLog.js";
 import { prepareUpstreamRequest, notifyUpstreamResponse } from "./request-prepare-adapter.js";
 import { tryReportCreditFromPath, extractSpaceIdFromPath } from "./credit-reporter.js";
+import {
+  getInstanceUpstreamConfigs,
+  resolveUpstreamConfig,
+  shouldOverride,
+} from "./instance-upstream-cache.js";
 import { resolveModelId, isModelInPricing } from "./pricing.js";
 import { inspectAndRecord } from "./identity.js";
 import { writeFailedReportRaw } from "./clickhouse.js";
@@ -78,7 +84,7 @@ function createTdaiClient(config: ProxyConfig, spaceId?: string): TdaiClient | n
 /**
  * Flatten messages into Opik-friendly chat messages (no truncation).
  */
-function flattenMessagesForOpik(messages: unknown[]): unknown[] {
+export function flattenMessagesForOpik(messages: unknown[]): unknown[] {
   const result: unknown[] = [];
   for (const msg of messages) {
     const m = msg as Record<string, unknown>;
@@ -575,7 +581,30 @@ export async function handleChatCompletions(
   // `modelName`, ensuring upstream ids and billing/observability keys align
   // across all traffic.
   const requestedModel = typeof body.model === "string" ? body.model : "unknown";
-  if (!isModelInPricing(config.creditPricing, requestedModel)) {
+
+  // ── Early instance config fetch (needed before pricing gate) ──────────
+  // Custom upstream (Option 2/3) may use models not in our pricing table,
+  // and should NOT have their model alias-resolved to our internal IDs.
+  //
+  // The alias-skip gate depends on WHO is calling:
+  //   - external caller → look at `type=conversation` (client's chat traffic)
+  //   - systemUser (memory/knowledge/skill extraction) → look at
+  //     `type=extraction` (client's memory-extraction upstream)
+  // A conversation-typed row is unrelated to internal extraction traffic,
+  // and vice versa. Prior code keyed off `conversation` unconditionally,
+  // which regressed alias resolution for internal callers whenever the
+  // instance carried any Option-2/3 conversation config (fix: 64e989a0 →
+  // this file's next revision).
+  const _earlyAgent = c.req.path.split("/").filter(Boolean)[0] ?? undefined;
+  const _earlyInstanceConfigs = await getInstanceUpstreamConfigs(config.coreSkill, earlySpaceId);
+  const _earlyConvCfg = resolveUpstreamConfig(_earlyInstanceConfigs, _earlyAgent, "conversation");
+  const _earlyExtractCfg = resolveUpstreamConfig(_earlyInstanceConfigs, _earlyAgent, "extraction");
+  const _earlySysMatch = hasSystemUsers() ? matchSystemUserByUserId(earlyVerify.userId) : null;
+  const _isCustomUpstream = _earlySysMatch !== null
+    ? shouldOverride(_earlyExtractCfg)
+    : shouldOverride(_earlyConvCfg);
+
+  if (!_isCustomUpstream && !isModelInPricing(config.creditPricing, requestedModel)) {
     return c.json(
       {
         error: {
@@ -589,12 +618,9 @@ export async function handleChatCompletions(
   }
 
   // ── Model alias: rewrite client-facing modelName → real model_id ──────────
-  // Clients may put a human-readable name (e.g. "claude-opus-4.7") in `model`;
-  // resolve it back to the real upstream model_id (e.g. "ep-pksklwtb") BEFORE
-  // routing / logging / forwarding, so model_id stays the canonical identity
-  // across the whole pipeline. No-op when `model` is already a real id/unknown.
-  const modelId = resolveModelId(config.creditPricing, requestedModel);
-  const modelAliasApplied = typeof body.model === "string" && modelId !== requestedModel;
+  // Only for official mode. Custom upstream keeps the original model name.
+  let modelId = _isCustomUpstream ? requestedModel : resolveModelId(config.creditPricing, requestedModel);
+  const modelAliasApplied = !_isCustomUpstream && typeof body.model === "string" && modelId !== requestedModel;
   if (modelAliasApplied) body.model = modelId;
 
   // ── System-user short-circuit ────────────────────────────────────────────
@@ -712,6 +738,11 @@ export async function handleChatCompletions(
   // 判定:agentSource=dsh 且 body.tools 非空且不含 ask_user_question。
   // (tools 空数组表示纯对话/aux,不用兜底;tools 里就有 ask_user_question 说明
   // 有 preset 挂 UI 工具,正常走 form。)
+  //
+  // NOTE(opencode): opencode CLI 同样不支持虚拟 ask_followup_question tool,
+  // 但走独立的 header-driven session-init 分支(见下方 opencode 特化块),
+  // 因此不需要走这里的 headless bypass —— opencode 能吃 mem 命令纯文本响应,
+  // 也需要 injection / L0 / skill 提取,只是不能弹 form。
   const _dshHeadless = agentSource === "dsh" && (() => {
     const tools = (body as { tools?: unknown }).tools;
     if (!Array.isArray(tools) || tools.length === 0) return false;
@@ -725,11 +756,102 @@ export async function handleChatCompletions(
     console.log(`[request-classify] session=${sessionKey} agent=dsh headless/no-preset (no ask_user_question tool) → bypass session-init, direct passthrough`);
   }
 
+  // ── Client capabilities detection ─────────────────────────────────────────
+  // 探测客户端"能否响应 proxy 发起的 fake ask tool_call"。
+  //
+  // 当前仅对 workbuddy 做实质判定：新版 workbuddy 官方 tools 集合里拿掉了
+  // AskUserQuestion（现只剩 20 个工具），proxy 侧继续发 tool_calls 会被客户端
+  // 收下但不知道怎么渲染 → 卡死在 pending。此时需要降级走文字模式
+  // （content chunk + markdown + 纯文字解析）。
+  //
+  // 其他客户端（codebuddy / claude-code / dsh / codex / opencode / hermes /
+  // openclaw）一律 askUserQuestion=true，保持既有行为不变。dsh headless 场景走
+  // 上面独立的 _dshHeadless bypass 分支，不受本探测影响。
+  const { detectClientCapabilities } = await import("./session/client-capabilities.js");
+  const _capabilities = detectClientCapabilities(agentSource, body);
+  if (agentSource === "workbuddy" && !_capabilities.askUserQuestion) {
+    console.log(`[request-classify] session=${sessionKey} agent=workbuddy no-AskUserQuestion tool → text-mode session-init`);
+  }
+
+  // ── mem:session-reset pre-hook ──
+  // hermes / openclaw 走 header 预选身份, dsh headless 无 ask_user_question tool —
+  // 三者都没有交互式 form UI 可以弹,reset 后 session 会永远卡在 pending_asset_confirm。
+  // 直接返回"不支持"文案。
+  const _headerOnlyAgents = new Set(["hermes", "openclaw"]);
+  const _noFormAgent = _headerOnlyAgents.has(agentSource) || _dshHeadless;
+  if (!isAuxiliary && _noFormAgent) {
+    const { isSessionResetCommand } = await import("./mem-command/pre-intercept.js");
+    if (isSessionResetCommand(body as Record<string, unknown>, agentSource)) {
+      const { buildMemResponse } = await import("./mem-command/response-builder.js");
+      console.log(`[mem-command:pre] session-reset unsupported for agent=${agentSource} dshHeadless=${_dshHeadless}`);
+      const msg = _headerOnlyAgents.has(agentSource)
+        ? `⚠️ mem:session-reset 不支持 ${agentSource} 客户端。\n\n`
+          + `${agentSource} 通过 x-team-id / x-agent-id / x-task-id 请求头预选身份，没有交互式表单入口。\n`
+          + `请在客户端配置中直接更改这些请求头来切换 Team / Agent / Task。`
+        : "⚠️ mem:session-reset 不支持 dsh headless 模式。\n\n"
+          + "dsh 客户端在 headless / no-preset 场景下不挂 ask_user_question tool，无法弹出资产选择表单。\n"
+          + "请在带 ask_user_question preset 的 dsh 环境下使用。";
+      return buildMemResponse(msg, {
+        protocol: "openai",
+        stream: isStream,
+        requestId: `mem-reset-unsupported-${Date.now()}`,
+      });
+    }
+  }
+  if (!isAuxiliary && !_dshHeadless && !_headerOnlyAgents.has(agentSource)) {
+    const { isSessionResetCommand } = await import("./mem-command/pre-intercept.js");
+    if (isSessionResetCommand(body as Record<string, unknown>, agentSource)) {
+      const { parseMemCommand } = await import("./mem-command/index.js");
+      const memCmd = parseMemCommand(body as Record<string, unknown>, agentSource);
+      if (memCmd) {
+        const { getSessionStore } = await import("./session/store.js");
+        const store = getSessionStore();
+        const compositeKey = `${agentSource}:${sessionKey}`;
+        store.bind(compositeKey, { userId: userId || "anonymous", agentSource, sessionId: sessionKey, spaceId });
+
+        // ── 强制归档旧 agent 的 skill buffer（best-effort）──
+        // reset 前旧 agent 累积的对话片段可能还没达到阈值，不 flush 会永久丢失。
+        const oldState = store.get(compositeKey);
+        if (oldState?.status === "initialized" && oldState.sessionInfo && config.coreSkill?.endpoint) {
+          const si = oldState.sessionInfo as Record<string, string>;
+          if (si.space_id && si.user_id && si.team_id && si.agent_id) {
+            import("./skill/core-client.js").then(({ getCoreSkillClient }) => {
+              const client = getCoreSkillClient(config.coreSkill!);
+              client.forceArchive(
+                {
+                  space_id: si.space_id,
+                  user_id: si.user_id,
+                  team_id: si.team_id,
+                  agent_id: si.agent_id,
+                  session_id: sessionKey,
+                  task_id: si.task_id || undefined,
+                  reason: "session-reset",
+                },
+                { serviceId: si.space_id },
+              ).then((res) => {
+                console.log(`[session-reset] force-archive old buffer: status=${res.status} session=${sessionKey} agent=${si.agent_id}`);
+              }).catch((err) => {
+                console.warn(`[session-reset] force-archive failed (best-effort): ${err instanceof Error ? err.message : String(err)}`);
+              });
+            }).catch(() => {});
+          }
+        }
+
+        const resetEpoch = Date.now();
+        await store.set(compositeKey, { status: "uninitialized", keyId: sessionKey, startedAt: resetEpoch, attemptCount: 0, userId: userId || "anonymous", resetEpoch, resetFlow: true });
+        const bindingRepo = store.getBindingRepo();
+        if (bindingRepo) await bindingRepo.deleteBinding(spaceId, sessionKey).catch(() => {});
+        console.log(`[mem-command:pre] session-reset session=${sessionKey} → falling through to pop form`);
+      }
+    }
+  }
+
   // ── Session Init (before injection pipeline) ─────────────────────────────
   let sessionInfo: Record<string, unknown> | null | undefined;
   let assetCapabilities: import("./injection/types.js").AssetCapabilityFlags | undefined;
   let injectedSkipped = !conversationId || isAuxiliary || _dshHeadless;
   let sessionJustRegistered = false;
+  let _resetFlowResult: { agentName: string; agentIdShort: string; teamName?: string; teamId: string; taskName?: string | null; bypassed?: boolean } | null = null;
   console.log(`[injection-debug] conversationId=${conversationId} sessionKey=${sessionKey} userId=${userId} agentSource=${agentSource} kind=${_requestKind} dshHeadless=${_dshHeadless} sessionInitEnabled=${config.sessionInit?.enabled} injectionEnabled=${config.injection?.enabled} injectors=${JSON.stringify(config.injection?.injectors)} injectedSkipped=${injectedSkipped} spaceId=${spaceId}`);
   if (config.sessionInit?.enabled && conversationId && !isAuxiliary && !_dshHeadless) {
     try {
@@ -780,6 +902,15 @@ export async function handleChatCompletions(
       // L2b recovery 分支 justRegistered=true 只是 prewarm 信号，走 recovered 分支时
       // wentThroughSessionInitStateMachine=false 会自然过滤掉，不进 sessionJustRegistered。
       let wentThroughSessionInitStateMachine = false;
+      // Recovery hit source 决定是否需要 prewarm：
+      //   - l1 / l2a：本 pod 内存 + storage 都热 —— hook-cache 大概率也在，跳过 prewarm；
+      //   - l2b / history-scan：跨 pod 冷启 / 从 binding 重建 —— hook-cache 可能已过期，需 refill。
+      // 之前无条件 `justRegistered: true` 会导致 L1 hit terminal 的常态轮次每次都跑一遍
+      // skill/knowledge/tdai-memory 网络请求（~2s + 3 次外部调用），且 knowledge 首次
+      // timeout 概率被反复放大。这里按 recovery source 精确判断。
+      const needsPrewarm =
+        recovered?.__recoverySource === "l2b" ||
+        recovered?.__recoverySource === "history-scan";
       if (recovered && isTerminalState) {
         // Recovery hit: keep original messages, only re-inject <session_context>
         // so this turn's system message carries agent/task context again.
@@ -802,17 +933,34 @@ export async function handleChatCompletions(
           agentDetail: recovered.agentDetail,
           taskDetail: recovered.taskDetail,
           bypassed: recovered.bypassed,
-          justRegistered: true, // triggers prewarm to refill hook cache
+          justRegistered: needsPrewarm, // 只在 L2b / history-scan recovery 时触发 prewarm
         };
       } else {
+        // opencode 走跟 codebuddy 完全同构的通用 else 分支（复用 handleSessionInit +
+        // ask_followup_question form）。验证 opencode 客户端对未知 tool_call 的真实反应。
         wentThroughSessionInitStateMachine = true;
+        // 检测客户端 ask_followup_question schema 里 questions 字段是否声明为 array。
+        // CB v1.106+ 声明为 array 且做 type check；老版本无 schema 或 questions 无 type 声明。
+        let questionsAsArray = true; // 默认新版
+        const clientTools = Array.isArray(body.tools) ? body.tools as unknown[] : [];
+        const afqTool = clientTools.find((t: any) =>
+          t?.function?.name === "ask_followup_question" || t?.name === "ask_followup_question"
+        ) as Record<string, unknown> | undefined;
+        if (afqTool) {
+          const params = (afqTool as any).function?.parameters ?? (afqTool as any).parameters;
+          const qType = params?.properties?.questions?.type;
+          questionsAsArray = qType === "array";
+        } else if (clientTools.length === 0) {
+          // 无 tools 定义（极老客户端或 non-CB agent），保守走 string
+          questionsAsArray = false;
+        }
         initResult = await handleSessionInit(
           sessionKey,
           userId || null,
           body.messages as Array<Record<string, unknown>> ?? [],
           config.sessionInit,
           store,
-          { stream: isStream, modelId: modelId as string, protocol: "openai" },
+          { stream: isStream, modelId: modelId as string, protocol: "openai", questionsAsArray, capabilities: _capabilities },
           agentSource,
           metadataClient,
           kernelUserKey,
@@ -826,7 +974,7 @@ export async function handleChatCompletions(
         return initResult.response;
       }
 
-      console.log(`[injection-debug] initResult session=${sessionKey} intercepted=${initResult.intercepted} bypassed=${initResult.bypassed} justRegistered=${initResult.justRegistered} hasSessionInfo=${!!initResult.sessionInfo} hasAgentDetail=${!!initResult.agentDetail}`);
+      console.log(`[injection-debug] initResult session=${sessionKey} intercepted=${initResult.intercepted} bypassed=${initResult.bypassed} justRegistered=${initResult.justRegistered} resetFlow=${(initResult as any).resetFlow} hasSessionInfo=${!!initResult.sessionInfo} hasAgentDetail=${!!initResult.agentDetail}`);
       // 见 anthropicHandler 对称位置：只在真正走 sessionInit state machine 时继承。
       if (wentThroughSessionInitStateMachine && initResult.justRegistered) sessionJustRegistered = true;
 
@@ -834,6 +982,9 @@ export async function handleChatCompletions(
       if (initResult.bypassed) {
         injectedSkipped = true;
         console.log(`[session-init] session=${sessionKey} bypassed → skipping all injection`);
+        if (initResult.resetFlow) {
+          _resetFlowResult = { agentName: "", agentIdShort: "", teamId: "", bypassed: true };
+        }
       }
 
       if (!initResult.bypassed && initResult.sessionInfo) {
@@ -866,6 +1017,35 @@ export async function handleChatCompletions(
         spaceId,
       );
 
+      // Prewarm 前置短路：mem-command 命中的 turn 不 forward 上游、也不消费
+      // hook-cache，若照常 prewarm 会白白多花 2-3s + 3 次网络请求（knowledge
+      // 33% timeout 会被放大）。这里先做纯字符串解析（<1ms、无副作用），
+      // 命中就置 memCommandPending 让 prewarm 分支短路；实际 mem-command 执行
+      // 仍在下方原位置进行，L0 write / skill extract / langfuse 全部保留。
+      //
+      // fallback 语义：sessionJustRegistered 在此已定型（见上文 L786），
+      // checkFirst 场景可安全复用。
+      let memCommandPending = false;
+      if (!isAuxiliary && !_dshHeadless) {
+        try {
+          const { parseMemCommand } = await import("./mem-command/index.js");
+          let peek = parseMemCommand(body as Record<string, unknown>, agentSource);
+          if (!peek && sessionJustRegistered) {
+            peek = parseMemCommand(body as Record<string, unknown>, agentSource, { checkFirst: true });
+          }
+          if (peek) {
+            memCommandPending = true;
+            console.log(`[hook-cache] prewarm skipped: mem-command pending (cmd=${peek.command}) session=${sessionKey}`);
+          }
+        } catch (err) {
+          console.warn(
+            "[mem-command] pre-prewarm peek failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+          // peek 失败不阻塞主链路，退化为原有行为（正常 prewarm）。
+        }
+      }
+
       // Case 2 success → await prewarm so the first-turn pipeline always
       // hits the cache. A fire-and-forget void() here caused the bug where
       // the pipeline ran before the cache was populated, silently injecting
@@ -874,6 +1054,7 @@ export async function handleChatCompletions(
         !initResult.bypassed &&
         initResult.justRegistered &&
         initResult.sessionInfo &&
+        !memCommandPending &&
         config.injection?.enabled &&
         (config.injection.injectors?.length ?? 0) > 0
       ) {
@@ -883,13 +1064,13 @@ export async function handleChatCompletions(
             keyId: sessionKey,
             userId: userId || "anonymous",
             agentSource,
+            spaceId,
             sessionInfo: initResult.sessionInfo as import("./session/types.js").SessionInfo,
             agentDetail: initResult.agentDetail ?? null,
             taskDetail: initResult.taskDetail ?? null,
             assetCapabilities,
-            // 透传 caller 的 sk-mem key，用于 prewarm 阶段 TDAI ACL 校验（x-tdai-user-key）
             callerUserKey: apiKey ?? undefined,
-          });
+          }, { clearBefore: true });
         } catch (err) {
           console.warn(
             "[hook-cache] handler prewarm error:",
@@ -913,6 +1094,25 @@ export async function handleChatCompletions(
       // call is a no-op and guards against future refactors that copy
       // the object between these two lines.
       restoreSessionSpaceId(sessionInfo, spaceId);
+
+      // 记录 resetFlow 信息到外层，session-init 块结束后用于返回确认响应
+      if (initResult.resetFlow && initResult.justRegistered && !initResult.bypassed) {
+        _resetFlowResult = {
+          agentName: initResult.agentDetail?.name ?? "未知",
+          // agentIdShort 字段名沿用历史，但此处**存完整 agent_id**（如 agt-1celthr7yn）。
+          // 之前 slice(-8) 只留后 8 位会显示成 "elthr7yn" 这种截断串，用户完全看不懂，
+          // 与 team 截断问题同源。agent id 本身就短，全量展示无害且更可读。
+          agentIdShort: (initResult.sessionInfo as Record<string, unknown>)?.agent_id
+            ? String((initResult.sessionInfo as Record<string, unknown>).agent_id) : "",
+          // teamName 来自 session-init（cachedTeams[selected].team_name）；
+          // teamId 存**完整** team_id（如 team-wyuyb7sion）—— 之前 slice(-8)
+          // 会显示成 "uyb7sion" 用户看不懂，且 teamName 为空时兜底更差。
+          teamName: initResult.teamName ?? undefined,
+          teamId: (initResult.sessionInfo as Record<string, unknown>)?.team_id
+            ? String((initResult.sessionInfo as Record<string, unknown>).team_id) : "",
+          taskName: initResult.taskDetail?.name,
+        };
+      }
     } catch (err: unknown) {
       console.error("[session-init] Error in handleSessionInit:", err instanceof Error ? err.message : String(err));
       sessionInfo = undefined;
@@ -920,11 +1120,43 @@ export async function handleChatCompletions(
     }
   }
 
+  // ── mem:session-reset 完成确认 ─────────────────────────────────────────────
+  if (_resetFlowResult) {
+    const { agentName, agentIdShort, teamName, teamId, taskName, bypassed } = _resetFlowResult;
+    // Team 行拼装：优先 "team_name (team_id)"；没查到 team_name 时至少完整 team_id 兜底；
+    // 两者都空则整行省略。避免出现 "Team: uyb7sion" 这种截断字符串。
+    const teamLine = teamName
+      ? `- **Team**: ${teamName}${teamId ? ` (${teamId})` : ""}`
+      : teamId
+        ? `- **Team**: ${teamId}`
+        : null;
+    const lines = bypassed
+      ? ["✅ 已跳过团队资产关联", "", "后续对话不注入任何团队资产（Skill / 记忆 / Knowledge）。"]
+      : [
+          "✅ 已重新绑定团队资产",
+          "",
+          `- **Agent**: ${agentName}${agentIdShort ? ` (${agentIdShort})` : ""}`,
+          teamLine,
+          taskName ? `- **Task**: ${taskName}` : "- **Task**: 未关联",
+          "",
+          "后续对话将使用新 Agent 的 Skill、记忆和知识资产。",
+        ].filter(Boolean);
+    const text = (lines as string[]).join("\n");
+
+    const { buildMemResponse } = await import("./mem-command/response-builder.js");
+    console.log(`[mem-command:session-reset] completed: bypassed=${!!bypassed} agent=${agentName} (${agentIdShort}) team=${teamName ?? "-"} (${teamId || "-"})`);
+    return buildMemResponse(text, {
+      protocol: "openai",
+      stream: isStream,
+      requestId: `mem-reset-${Date.now()}`,
+    });
+  }
+
   // ── mem: command intercept ────────────────────────────────────────────────
   // 位置对齐 anthropicHandler.ts:847 —— session init 完成后、injection 之前。
   // 命中时：执行命令 → 写 L0 → 触发 skill extract → 伪造 OpenAI 响应返回，跳过
-  // injection（不破坏 KV cache）和上游转发（零 token 消耗）。配置开关
-  // memCommand.enabled 关闭时此段完全不执行，走原有链路。
+  // injection（不破坏 KV cache）和上游转发（零 token 消耗）。命令拦截恒定启用，
+  // 未知命令由 executeMemCommand 内的 KNOWN_COMMANDS 兜底提示。
   //
   // 解决的坑：CodeBuddy 走 OpenAI 协议命中本 handler，之前 mem-command intercept
   // 只挂在 anthropicHandler，CB 用户发 `mem:help` 会直接透传到上游 LLM，返回
@@ -933,8 +1165,8 @@ export async function handleChatCompletions(
   //
   // 请求分类：OpenAI 协议不做 CC 的 fork/sidequery 分流（handler.ts 没接 CC
   // routing），所有请求都视为 main —— 与 codebuddy adapter classifyRequest 一致。
-  if (config.memCommand?.enabled && !isAuxiliary && !_dshHeadless) {
-    const { parseMemCommand, isMemCommandAllowed, executeMemCommand, buildMemResponse } = await import("./mem-command/index.js");
+  if (!isAuxiliary && !_dshHeadless) {
+    const { parseMemCommand, executeMemCommand, buildMemResponse, extractSimpleMessages, truncateArgs } = await import("./mem-command/index.js");
     // 常规检测：最后一条 user message
     let memCmd = parseMemCommand(body as Record<string, unknown>, agentSource);
     // Session init 状态机在本 turn 完成终态（初始化 or bypass）时，最后一条
@@ -944,7 +1176,9 @@ export async function handleChatCompletions(
     if (!memCmd && sessionJustRegistered) {
       memCmd = parseMemCommand(body as Record<string, unknown>, agentSource, { checkFirst: true });
     }
-    if (memCmd && isMemCommandAllowed(config.memCommand, memCmd.command)) {
+    // session-reset 已经在 pre-hook 处理过，跳过防止重复执行，详见 anthropicHandler 同名段
+    if (memCmd?.command === "session-reset") memCmd = null;
+    if (memCmd) {
       // 会话未初始化时，命令不可用（同 anthropic 侧提示）
       if (!sessionInfo || injectedSkipped) {
         const errText = `⚠️ 会话未初始化，命令不可用。请先完成 session 初始化（选择 Team/Agent）后重试。`;
@@ -953,7 +1187,7 @@ export async function handleChatCompletions(
           stream: isStream,
           requestId: `mem-cmd-${Date.now()}`,
         });
-        console.log(`[mem-command] cmd=${memCmd.command} session=${sessionKey} blocked: session not initialized`);
+        console.log(`[mem-command] cmd=${memCmd.command} args="${truncateArgs(memCmd.args)}" session=${sessionKey} blocked: session not initialized`);
         return errResponse;
       }
       const memResult = await executeMemCommand(memCmd, {
@@ -967,6 +1201,15 @@ export async function handleChatCompletions(
         protocol: "openai",
         stream: isStream,
         args: memCmd.args,
+        // task 命令族用最近对话生成草稿。OpenAI/CC/CB 协议直接从 body.messages 取。
+        bodyMessages: extractSimpleMessages(body.messages),
+        // 方案 D：taskDraft LLM 跟随主模型 —— 复用客户端当次 model + per-agent 上游 + apiKey
+        model: modelId,
+        upstreamUrl:
+          (agentFromPath ? config.upstream.agents?.[agentFromPath]?.url : undefined) ||
+          config.upstream.url,
+        // CB/CodeBuddy 主链路走 OpenAI chat/completions
+        upstreamProtocol: "openai",
         // OpenAI 协议无 extended thinking 概念，恒 false
       });
 
@@ -1008,7 +1251,7 @@ export async function handleChatCompletions(
         }
       }
 
-      console.log(`[mem-command] cmd=${memCmd.command} session=${sessionKey} success=${memResult.success}`);
+      console.log(`[mem-command] cmd=${memCmd.command} args="${truncateArgs(memCmd.args)}" session=${sessionKey} success=${memResult.success}`);
 
       // Langfuse: 上报 mem-command（跟 anthropicHandler 对称）。
       //   lf 在 L955 才构造，这里 inline 推导 turnSeq → traceId。
@@ -1100,7 +1343,7 @@ export async function handleChatCompletions(
   //   (c) entry present, apiKey non-empty  → agent.apiKey (server-side key)
   // Presence of an entry (case b/c) cuts the global fallback — that's what
   // lets one proxy serve mixed server-key / client-key agents at once.
-  const effectiveApiKey = agentUpstreamEntry
+  let effectiveApiKey = agentUpstreamEntry
     ? (agentUpstreamEntry.apiKey ?? "")
     : config.upstream.apiKey;
   // Normalize the request path to the canonical upstream endpoint so the
@@ -1131,9 +1374,30 @@ export async function handleChatCompletions(
     agentName: agentFromPath,
   });
 
+  // ── Instance upstream config override ──────────────────────────────────
+  // Reuse the early-fetched config (already cached, no extra RPC).
+  let skipCreditReport = false;
+  {
+    const routedToCheapModel = target.routedFrom !== "";
+    const convCfg = _earlyConvCfg;
+    if (!routedToCheapModel && shouldOverride(convCfg)) {
+      target.url = `${convCfg.base_url.replace(/\/+$/, "")}${forwardEndpoint}`;
+      effectiveApiKey = convCfg.mode === "custom_unified"
+        ? convCfg.api_key
+        : apiKey; // custom_passthrough: use client's original bearer token
+      if (convCfg.model_id) {
+        body.model = convCfg.model_id;
+        modelId = convCfg.model_id;
+      }
+      skipCreditReport = true;
+    }
+  }
+
   // ── Create pipeline logger ──────────────────────────────────────────────
   const pipe = createPipeline(config, traceId, target.model);
   pipe.requestReceived(messages.length, isStream);
+  if (target.logLine) pipe.info("COST_GUARD", target.logLine);
+  if (target.logLineExtra) pipe.info("COST_GUARD_DETAIL", target.logLineExtra);
 
   // ── Trace-level tags ──
   // agent_source 标明客户端族群（codebuddy / claude-code / codex / …），供
@@ -1158,9 +1422,22 @@ export async function handleChatCompletions(
     userId: keyId,
     sessionId: sessionKey,
     tags: traceTags,
-    routeTags: [],
+    routeTags: target.tags,
     userQuery: resolveLatestUserQuery(config, lcHeaders, c.req.path, body, messages),
   };
+  if (target.analyzerTrace) {
+    reportAnalyzerTrace(config, target.analyzerTrace, {
+      traceId,
+      langfuseTraceId: lf.traceId,
+      traceName: lf.traceName,
+      traceTags: lf.tags,
+      keyId: `${keyId}:${sessionKey}`,
+      sessionKey,
+      turnSeq,
+      startTime,
+      spaceId,
+    });
+  }
 
   // ── Langfuse debug metadata (only when config.langfuse.debug=true) ────────
   // CB / cursor / windsurf 走 OpenAI 协议命中本 handler；开 debug 时把请求
@@ -1186,7 +1463,7 @@ export async function handleChatCompletions(
     name: `${target.model} / ${keyId}`,
     startTime,
     input: { messages: flattenMessagesForOpik(messages) },
-    tags: traceTags,
+    tags: [...traceTags, ...target.tags],
     forkProjectName: "request_log",
     forkMetadata: {
       keyId,
@@ -1223,6 +1500,8 @@ export async function handleChatCompletions(
     userQuery: lf.userQuery,
     spaceId,
     lf,
+    opikTraceId: traceId,
+    opikKeyId: keyId,
   });
 
   const upstreamBody = buildUpstreamBody(body, target);
@@ -1309,6 +1588,14 @@ export async function handleChatCompletions(
   // A retry falls back to the model the client asked for, so the request ends
   // up costing what it would have cost unrouted — no saving to attribute.
   const routedFrom = retried ? "" : target.routedFrom;
+  // `routedFrom` is also present in cost-guard's opaque logMeta. Keep the
+  // normalized post-retry value authoritative so fallback requests never book
+  // savings or carry stale route attribution.
+  const { routedFrom: _ignoredRoutedFrom, ...routeLogMeta } = target.logMeta;
+  const responseLogMeta = {
+    ...routeLogMeta,
+    ...(retried ? { retrySuccess: true } : {}),
+  };
 
   // ── Streaming response ───────────────────────────────────────────────────
   if (isStream) {
@@ -1331,6 +1618,7 @@ export async function handleChatCompletions(
         upstreamUrl: target.url,
         stream: true,
         usage: { error: true, status: upstreamResp.status, body: errText.slice(0, 500) },
+        ...responseLogMeta,
         routedFrom,
         spaceId,
         upstreamRequestId,
@@ -1364,7 +1652,7 @@ export async function handleChatCompletions(
       startTime,
       inputMessages: messages,
       retried,
-      logMeta: retried ? { retrySuccess: true } : {},
+      logMeta: responseLogMeta,
       routedFrom,
       tdaiClient,
       tdaiIdentity,
@@ -1382,6 +1670,7 @@ export async function handleChatCompletions(
       langfuseDebug,
       debugMetadata,
       preparedStats,
+      skipCreditReport,
     };
     const passthrough = createUsageTapTransform(tapCtx);
     const tappedStream = upstreamResp.body.pipeThrough(passthrough);
@@ -1411,7 +1700,7 @@ export async function handleChatCompletions(
     // non-JSON upstream response
   }
 
-  const logMeta = retried ? { retrySuccess: true } : {};
+  const logMeta = responseLogMeta;
 
   // Report the completed response to the extension (same signal the streaming
   // path emits from its tap). Fire-and-forget.
@@ -1491,10 +1780,10 @@ export async function handleChatCompletions(
       stream: false,
       usage,
       extensionStats: preparedStats ?? undefined,
+      ...logMeta,
       routedFrom,
       spaceId,
       upstreamRequestId,
-      ...logMeta,
     });
 
     const outputMessages = assistantMessage ? [assistantMessage] : [];
@@ -1602,7 +1891,10 @@ export async function handleChatCompletions(
   // Credit usage reporting (non-streaming). Failures are surfaced to the client
   // via the `x-credit-report-error` response header but never replace the
   // upstream LLM response body — the user-facing answer is preserved.
-  const creditOutcome = await tryReportCreditFromPath(
+  // skipCreditReport: instance config custom model → user's expense, skip credit.
+  const creditOutcome = skipCreditReport
+    ? { attempted: false, ok: false }
+    : await tryReportCreditFromPath(
     config.creditReport,
     c.req.path,
     usage,
@@ -1703,6 +1995,8 @@ interface TapContext {
   debugMetadata: Record<string, unknown>;
   /** Opaque counters from the request-preparation stage; null when it didn't run. */
   preparedStats: Record<string, unknown> | null;
+  /** Instance upstream config: skip credit reporting for custom model. */
+  skipCreditReport?: boolean;
 }
 
 /** Accumulated tool call state during SSE streaming. */
@@ -1891,6 +2185,7 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
           stream: true,
           usage: lastUsage,
           extensionStats: ctx.preparedStats ?? undefined,
+          ...ctx.logMeta,
           routedFrom: ctx.routedFrom,
           spaceId,
           upstreamRequestId,
@@ -2023,15 +2318,18 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
     // Credit usage reporting for streaming responses. The stream has already
     // been forwarded to the client; failures here are best-effort and can
     // only be observed via server logs (no way to retro-add response headers).
-    tryReportCreditFromPath(
-      ctx.config.creditReport,
-      ctx.requestPath,
-      lastUsage,
-      ctx.config.creditPricing,
-      ctx.modelId,
-      ctx.upstreamUrl,
-      "usage",
-    )
+    // skipCreditReport: instance config custom model → user's expense, skip credit.
+    (ctx.skipCreditReport
+      ? Promise.resolve({ attempted: false, ok: false })
+      : tryReportCreditFromPath(
+          ctx.config.creditReport,
+          ctx.requestPath,
+          lastUsage,
+          ctx.config.creditPricing,
+          ctx.modelId,
+          ctx.upstreamUrl,
+          "usage",
+        ))
       .then((outcome) => {
         if (outcome.attempted && !outcome.ok) {
           pipe.error("CREDIT_REPORT", `[stream] ${outcome.errorMessage ?? "unknown"}`);

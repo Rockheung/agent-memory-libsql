@@ -3445,6 +3445,9 @@ export class LibsqlVectorStore implements IMemoryStore {
       vectorSearch: this.vecTablesReady,
       ftsSearch: this.ftsAvailable,
       nativeHybridSearch: false,
+      // (fork) L2/L3 프로필은 S3StorageBackend 가 맡는다 — 이 스토어는 행을
+      // 서빙하지 않으므로 rowfs 의 백엔드가 될 수 없다. sqlite 와 같은 값이다.
+      profileRows: false,
       sparseVectors: false,
     };
   }

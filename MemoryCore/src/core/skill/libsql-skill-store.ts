@@ -30,7 +30,7 @@ import { createClient, type Client, type InValue } from "@libsql/client";
 
 import { randomBase62 } from "../../utils/short-id.js";
 import { SKILLS_DDL, SKILL_FTS_DDL, SKILL_VEC_DDL_TEMPLATE, FTS_CONTENT_MAX } from "./skill-store-ddl.js";
-import { buildFtsQuery, tokenizeForFts } from "../store/sqlite.js";
+import { buildFtsQuery, tokenizeForFts } from "../store/tokenize.js";
 import type { ISkillStore, ExpiredVersionMeta, SkillStoreCapabilities, SkillSearchResult } from "./skill-store.interface.js";
 import type {
   AppendVersionInput,

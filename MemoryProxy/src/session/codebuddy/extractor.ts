@@ -22,6 +22,39 @@ import { SKIP_LABEL, PATH_SEP, ASSET_CONFIRM_YES, ASSET_CONFIRM_NO } from "./for
 const SKIP_RE = /跳过|不关联|skip/i;
 export const BYPASS_MARKER = "__bypass__" as const;
 
+// ── opencode tool-result 剥壳 ───────────────────────────────────────────────
+//
+// opencode CLI 的原生 `question` tool 收到用户选择后，把答案以纯文本形式回给
+// model 作为 tool-result，格式为：
+//   User has answered your questions: "问题描述..."="用户答案"[, "问题2"="答案2"]
+//
+// 这里的**问题描述里往往包含"跳过"、"不关联"等字样**（因为我们在 form 里让
+// 用户看到"跳过"选项）。如果直接把整段 content 喂给 extractAgentOnly /
+// extractTaskOnly，第一行 SKIP_RE.test 就会命中问题描述里的"跳过" →
+// 误判为 BYPASS_MARKER，导致 agent_select / task_select 阶段永远走不通。
+//
+// 修复：在这些 extractor 入口先剥壳——只提取所有 `="..."` 右边的 answer 段
+// 拼接后再做后续判断。非 opencode 场景（CB XML / codex 裸文本 / wb 直接
+// answer）不含此包裹层，helper 返回 null，走原始 content 老路径。
+//
+// asset_confirm 场景不用这个 helper，因为 extractAssetConfirm 是"先找肯定
+// 标记再找否定标记"的白名单式匹配，问题描述里的"跳过"字样天然无害。
+//
+// 匹配 `="value"` 中的 value——注意 value 里可能出现被 opencode 转义过的
+// 内层引号，实测（2026-08-19）opencode 客户端遇到内层引号会输出转义后的
+// `\"` 或直接透传全角引号 `"`，为最大兼容用 `[^"]*` 简易匹配即可（覆盖
+// 我们 form.ts 里所有 label——纯 label 文本没有裸英文引号）。
+function extractOpencodeAnswers(content: string): string | null {
+  if (!content.includes("User has answered your questions:")) return null;
+  const answers: string[] = [];
+  const re = /"[^"]*"="([^"]*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    if (m[1]) answers.push(m[1]);
+  }
+  return answers.length > 0 ? answers.join(" | ") : null;
+}
+
 /**
  * 从用户答复中提取 asset_confirm 选择。
  * 返回 true=是（关联资产），false=否（bypass），null=未识别。
@@ -111,6 +144,11 @@ export function extractTeamFromOptionText(
 ): string | null {
   if (cachedTeams.length === 0) return null;
 
+  // opencode: 剥壳 tool-result 包裹，避免问题描述里的"跳过"字样触发误 SKIP。
+  // 见 extractOpencodeAnswers 头部注释。
+  const opencodeAnswer = extractOpencodeAnswers(content);
+  if (opencodeAnswer !== null) content = opencodeAnswer;
+
   let teamText: string | null = null;
 
   // XML parsing: CodeBuddy <question_answer> in user message.
@@ -123,7 +161,7 @@ export function extractTeamFromOptionText(
   const hay = teamText ?? content;
   const trimmed = hay.trim();
 
-  // 检测"本次不关联" / SKIP_RE → bypass。
+  // 检测"暂时跳过" / SKIP_RE → bypass。
   // (P1-4) 早期只对 XML 解析出的 teamText 判 SKIP_RE, 非 XML content 走不到;
   // 真 codex CLI 里 codexFormAnswersAsMessages 把 JSON 答案抽成裸 content
   // (如 "跳过"), 结果 SKIP_RE 永远不触发 → 走到普通 team 名匹配 → 未命中 →
@@ -229,6 +267,10 @@ export function extractFromOptionText(
       : null;
   if (!team) return null;
 
+  // opencode: 剥壳 tool-result 包裹（见 extractOpencodeAnswers 头部）。
+  const opencodeAnswer = extractOpencodeAnswers(content);
+  if (opencodeAnswer !== null) content = opencodeAnswer;
+
   let agentText: string | null = null;
   let taskText: string | null = null;
 
@@ -251,7 +293,7 @@ export function extractFromOptionText(
   if (!agentId) return null;
 
   // Resolve task。defaultTaskId 兜底通过 fetchTeamsAndAgents 头部注入实现：
-  // 用户选中"本次不关联任务"label 会 matchTaskInTeam 命中虚拟条目返回
+  // 用户选中"暂时跳过"label 会 matchTaskInTeam 命中虚拟条目返回
   // defaultTaskId，无需在此单独处理。SKIP_RE 兜底放到 match 失败之后，避免
   // 虚拟条目的"不关联"文案误伤。
   let taskId: string | undefined;
@@ -294,10 +336,20 @@ export function extractAgentOnly(
       ? cachedTeams[0]
       : null;
   if (!team) return null;
+  // opencode: 剥壳 tool-result 包裹（见 extractOpencodeAnswers 头部）。
+  const opencodeAnswer = extractOpencodeAnswers(content);
+  if (opencodeAnswer !== null) content = opencodeAnswer;
   const trimmed = content.trim();
   if (!trimmed) return null;
+  // 先尝试匹配 agent 候选：CB codebuddy form 里 SKIP_HINT_LATER_STAGE 描述文本
+  // 含"跳过"字样，若先判 SKIP_RE 会把 agent_select 阶段用户按钮选择也误 BYPASS
+  // (回归 case: content = "…请选择「X」下要使用的 Agent：（如选择\"跳过\"选项…）AgentLabel")。
+  // 对齐 extractTaskOnly (下方) 姿势: 先 match, 命中即返, 失败再由 SKIP_RE 兜底。
+  // 契约不变: codex 客户端自由文本"跳过" → match 失败 → SKIP_RE 兜底 → BYPASS_MARKER。
+  const matched = matchAgentInTeam(trimmed, team);
+  if (matched) return matched;
   if (SKIP_RE.test(trimmed) || trimmed.includes(SKIP_LABEL)) return BYPASS_MARKER;
-  return matchAgentInTeam(trimmed, team);
+  return null;
 }
 
 /**
@@ -320,10 +372,13 @@ export function extractTaskOnly(
       ? cachedTeams[0]
       : null;
   if (!team) return null;
+  // opencode: 剥壳 tool-result 包裹（见 extractOpencodeAnswers 头部）。
+  const opencodeAnswer = extractOpencodeAnswers(content);
+  if (opencodeAnswer !== null) content = opencodeAnswer;
   const trimmed = content.trim();
   if (!trimmed) return null;
   // 先尝试匹配真实/虚拟 task 条目（虚拟条目由 fetchTeamsAndAgents 头部注入,
-  // label="本次不关联任务"命中后返回的是 defaultTaskId，符合"跳过 task 但保
+  // label="暂时跳过"命中后返回的是 defaultTaskId，符合"跳过 task 但保
   // 留 agent"契约，不当作 BYPASS）。
   const matched = matchTaskInTeam(trimmed, team);
   if (matched) return matched;

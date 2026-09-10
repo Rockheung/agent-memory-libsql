@@ -55,6 +55,10 @@ import type {
   ConfigParamEntity,
   UpsertConfigParamInput,
   ListConfigParamsFilter,
+  InstanceUpstreamConfigEntity,
+  UpsertInstanceUpstreamConfigInput,
+  InstanceUpstreamConfigFilter,
+  UpstreamConfigType,
 } from "../types.js";
 import { DEFAULT_PAGINATION } from "../pagination.js";
 import { buildChatMemoryAssetId } from "../utils/chat-memory-asset.js";
@@ -333,6 +337,21 @@ export class LibsqlMetadataStore implements IMetadataStore {
         ON meta_config_params(user_id, module, param_name) WHERE scope = 'user';
       CREATE INDEX IF NOT EXISTS idx_meta_config_params_module
         ON meta_config_params(module);
+
+      CREATE TABLE IF NOT EXISTS meta_instance_upstream_config (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_source TEXT NOT NULL DEFAULT 'default',
+        type TEXT NOT NULL DEFAULT 'conversation' CHECK (type IN ('conversation', 'extraction')),
+        mode TEXT NOT NULL DEFAULT 'official' CHECK (mode IN ('official', 'custom_unified', 'custom_passthrough')),
+        base_url TEXT NOT NULL DEFAULT '',
+        api_key TEXT NOT NULL DEFAULT '',
+        model_id TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_meta_iuc_agent_type
+        ON meta_instance_upstream_config(agent_source, type);
     `);
     await this.migrateUserTypeColumn();
     await this.migrateLegacyUserKeys();
@@ -1464,7 +1483,29 @@ export class LibsqlMetadataStore implements IMetadataStore {
     );
   }
 
-  async listAgentFixedAssets(agentId: string, pagination?: PaginationParams | null): Promise<ListPage<FixedAssetBindingEntity>> {
+  async listAgentFixedAssets(
+    agentId: string,
+    pagination?: PaginationParams | null,
+    filter?: { assetTypes?: readonly string[] },
+  ): Promise<ListPage<FixedAssetBindingEntity>> {
+    const types = filter?.assetTypes ?? [];
+    if (types.length > 0) {
+      // sqlite-adapter 와 동일: JOIN 으로 SQL 층에서 걸러야 "페이지 자른 뒤 필터"
+      // 로 잘리지 않는다.
+      const placeholders = types.map(() => "?").join(",");
+      const jbase = `FROM meta_agent_fixed_assets b
+        INNER JOIN meta_assets a ON a.asset_id = b.asset_id
+        WHERE b.agent_id = ? AND a.asset_type IN (${placeholders})`;
+      const jparams: InValue[] = [agentId, ...types];
+      return await this.selectList(
+        `SELECT COUNT(*) AS c ${jbase}`,
+        jparams,
+        `SELECT b.* ${jbase} ORDER BY b.priority DESC, b.created_at DESC`,
+        jparams,
+        pagination,
+        (r) => r as unknown as FixedAssetBindingEntity,
+      );
+    }
     const base = "FROM meta_agent_fixed_assets WHERE agent_id = ?";
     return await this.selectList(
       `SELECT COUNT(*) AS c ${base}`,
@@ -1835,6 +1876,106 @@ export class LibsqlMetadataStore implements IMetadataStore {
       module: String(r.module),
       param_name: String(r.param_name),
       param_value: String(r.param_value),
+      description: String(r.description),
+      created_at: String(r.created_at),
+      updated_at: String(r.updated_at),
+    };
+  }
+
+  // ── InstanceUpstreamConfig ──────────────────────────────────────────────
+  // sqlite-adapter.ts 의 동명 메서드와 같은 계약. 차이는 await 뿐이다.
+
+  async getInstanceUpstreamConfig(
+    agentSource: string,
+    type: UpstreamConfigType,
+  ): Promise<InstanceUpstreamConfigEntity | null> {
+    return this.mapInstanceUpstreamConfig(
+      await this.get(
+        "SELECT * FROM meta_instance_upstream_config WHERE agent_source = ? AND type = ?",
+        agentSource, type,
+      ),
+    );
+  }
+
+  async upsertInstanceUpstreamConfig(
+    input: UpsertInstanceUpstreamConfigInput,
+  ): Promise<InstanceUpstreamConfigEntity> {
+    const now = nowIso();
+    const agentSource = input.agent_source ?? "default";
+    const type = input.type ?? "conversation";
+    await this.run(
+      `INSERT INTO meta_instance_upstream_config
+        (agent_source, type, mode, base_url, api_key, model_id, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(agent_source, type) DO UPDATE SET
+        mode = excluded.mode,
+        base_url = excluded.base_url,
+        api_key = excluded.api_key,
+        model_id = excluded.model_id,
+        description = excluded.description,
+        updated_at = excluded.updated_at`,
+      agentSource,
+      type,
+      input.mode,
+      input.base_url ?? "",
+      input.api_key ?? "",
+      input.model_id ?? "",
+      input.description ?? "",
+      now,
+      now,
+    );
+    return (await this.getInstanceUpstreamConfig(agentSource, type))!;
+  }
+
+  async listInstanceUpstreamConfigs(
+    filter?: InstanceUpstreamConfigFilter,
+  ): Promise<InstanceUpstreamConfigEntity[]> {
+    const conditions: string[] = [];
+    const params: InValue[] = [];
+    if (filter?.agent_source) {
+      conditions.push("agent_source = ?");
+      params.push(filter.agent_source);
+    }
+    if (filter?.type) {
+      conditions.push("type = ?");
+      params.push(filter.type);
+    }
+    const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+    const rows = await this.all(
+      `SELECT * FROM meta_instance_upstream_config${where} ORDER BY agent_source, type`,
+      ...params,
+    );
+    return rows.map((r) => this.mapInstanceUpstreamConfig(r)!);
+  }
+
+  async deleteInstanceUpstreamConfig(
+    agentSource: string,
+    type: UpstreamConfigType,
+  ): Promise<boolean> {
+    const existing = await this.get(
+      "SELECT id FROM meta_instance_upstream_config WHERE agent_source = ? AND type = ?",
+      agentSource, type,
+    );
+    if (!existing) return false;
+    // docs/11 의 함정: WHERE 없는 DELETE 금지. 여기는 복합키로 항상 좁힌다.
+    await this.run(
+      "DELETE FROM meta_instance_upstream_config WHERE agent_source = ? AND type = ?",
+      agentSource, type,
+    );
+    return true;
+  }
+
+  private mapInstanceUpstreamConfig(row: Row | null): InstanceUpstreamConfigEntity | null {
+    if (!row) return null;
+    const r = row as Record<string, unknown>;
+    return {
+      id: Number(r.id),
+      agent_source: String(r.agent_source),
+      type: String(r.type) as UpstreamConfigType,
+      mode: String(r.mode) as InstanceUpstreamConfigEntity["mode"],
+      base_url: String(r.base_url),
+      api_key: String(r.api_key),
+      model_id: String(r.model_id),
       description: String(r.description),
       created_at: String(r.created_at),
       updated_at: String(r.updated_at),

@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { handleChatCompletions } from "./handler.js";
 import { handleAnthropicMessages } from "./anthropicHandler.js";
 import { handleAuxiliaryEndpoint } from "./auxiliaryHandler.js";
+import { handleDirectPassthrough } from "./directHandler.js";
 import { handleCodexEndpoint } from "./codexHandler.js";
 import { handleWorkbuddyEndpoint } from "./workbuddyHandler.js";
 import { apiKeyToKeyId, extractBearerToken } from "./opik.js";
@@ -120,6 +121,12 @@ export function createApp(config: ProxyConfig): Hono {
     const keyId = apiKeyToKeyId(apiKey);
     return c.text(keyId + "\n");
   });
+
+  // ── /direct/* — 纯路由透传通道（必须置于所有业务路由之前） ────────────────
+  // 完全绕开 cost-guard / auth / model alias / thinking sanitize；
+  // 但保留 opik trace/span 上报与 jsonl usage 落表（仅对 Anthropic messages
+  // 与 OpenAI chat/completions 生效）。详见 directHandler.ts 头部注释。
+  app.all("/direct/*", (c) => handleDirectPassthrough(c, config));
 
 // Skill bridge: LLM curls land here, proxy injects auth + identity, forwards to core.
   // MUST be registered before the agent-prefixed `/:agent/v1/*` routes below.
@@ -302,6 +309,23 @@ export function createApp(config: ProxyConfig): Hono {
   if (config.injection?.assetReflection?.markerOptIn) {
     app.post("/dsh/:spaceId/analyse/v1/chat/completions", (c) => handleChatCompletions(c, config));
     app.post("/dsh/:spaceId/analyse/chat/completions", (c) => handleChatCompletions(c, config));
+  }
+
+  // opencode cost-guard / analyse marker 路由 —— 与 CC/CB/Codex/dsh 完全对称。
+  // opencode 客户端走标准 OpenAI Chat Completions（POST /v1/chat/completions），
+  // 路径形态与 CB/dsh 同族；因此 marker 段的路由形态与 dsh 一致：
+  //   /opencode/{spaceId}/cost-guard/v1/chat/completions
+  //   /opencode/{spaceId}/cost-guard/chat/completions（客户端 base 不带 /v1 时）
+  // 未显式注册这些 5 段路径时，会 fall through 到 catch-all POST /*，marker 静默失效。
+  // Router 分流已经在 handler.ts 里通过 agentName=agentFromPath("opencode") 传给
+  // resolveForwardTarget，只要路由能命中，Router 就能按 agentSource=opencode 分支决策。
+  if (config.costGuard.markerOptIn) {
+    app.post("/opencode/:spaceId/cost-guard/v1/chat/completions", (c) => handleChatCompletions(c, config));
+    app.post("/opencode/:spaceId/cost-guard/chat/completions", (c) => handleChatCompletions(c, config));
+  }
+  if (config.injection?.assetReflection?.markerOptIn) {
+    app.post("/opencode/:spaceId/analyse/v1/chat/completions", (c) => handleChatCompletions(c, config));
+    app.post("/opencode/:spaceId/analyse/chat/completions", (c) => handleChatCompletions(c, config));
   }
 
   app.post("/:agent/:spaceId/v1/messages", (c) => handleAnthropicMessages(c, config));
